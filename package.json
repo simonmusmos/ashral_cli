@@ -1,0 +1,28 @@
+{
+  "name": "ashral",
+  "version": "0.1.0",
+  "description": "Control center for AI coding agents",
+  "main": "dist/cli.js",
+  "bin": {
+    "ashral": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/cli.ts",
+    "start": "node dist/cli.js",
+    "clean": "rm -rf dist",
+    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper node_modules/node-pty/prebuilds/darwin-arm64/pty.node 2>/dev/null || true"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,91 @@
+import { BaseAdapter, type AdapterCommand } from './baseAdapter';
+import type { SessionStatus } from '../types/session';
+
+// Strip ANSI/VT escape sequences so regex patterns match clean text
+const ANSI_RE = /\x1B\[[0-9;]*[A-Za-z]|\x1B[@-_][0-?]*[ -/]*[@-~]/g;
+
+function stripAnsi(raw: string): string {
+  return raw.replace(ANSI_RE, '');
+}
+
+/**
+ * Heuristic patterns extracted from Claude Code's real terminal output.
+ *
+ * These are intentionally conservative — a false negative (missed transition)
+ * is safer than a false positive (wrong state). Tune as you collect more samples.
+ */
+
+// Claude is prompting the user to approve a tool call or destructive action
+const APPROVAL_PATTERNS = [
+  /do you want to/i,
+  /allow this/i,
+  /\(y\/n\)/i,
+  /\[y\/n\]/i,
+  /yes\/no/i,
+  /press enter to confirm/i,
+  /approve|deny/i,
+];
+
+// Claude is waiting for the user to type a new message
+const WAITING_PATTERNS = [
+  /^>\s*$/m,           // bare ">" prompt line
+  /\?\s*$/,            // line ending with "?"
+  /what would you like/i,
+  /how can i (help|assist)/i,
+  /human:\s*$/i,       // some Claude forks show "Human:" prompt
+];
+
+// Claude is actively doing work
+const RUNNING_PATTERNS = [
+  /running|executing|calling tool/i,
+  /writing|creating|updating|deleting/i,
+  /reading|fetching|searching/i,
+  /thinking\.\.\./i,
+];
+
+// Something clearly went wrong
+const ERROR_PATTERNS = [
+  /^error:/im,
+  /fatal error/i,
+  /uncaught exception/i,
+  /command not found/i,
+  /permission denied/i,
+  /ENOENT|EACCES|ECONNREFUSED/,
+];
+
+export class ClaudeAdapter extends BaseAdapter {
+  readonly agentName = 'claude';
+
+  getCommand(passthroughArgs: string[]): AdapterCommand {
+    return {
+      command: 'claude',
+      args: passthroughArgs,
+      // No extra env needed — claude picks up the caller's environment
+    };
+  }
+
+  detectStatus(raw: string, currentStatus: SessionStatus): SessionStatus | null {
+    // Never transition out of completed/error via output alone
+    if (currentStatus === 'completed') return null;
+
+    const text = stripAnsi(raw);
+
+    if (this.matches(text, APPROVAL_PATTERNS)) return 'approval_required';
+    if (this.matches(text, ERROR_PATTERNS)) return 'error';
+    if (this.matches(text, WAITING_PATTERNS)) return 'waiting_for_input';
+
+    // Transition back to running only if we were previously paused
+    if (
+      this.matches(text, RUNNING_PATTERNS) &&
+      (currentStatus === 'waiting_for_input' || currentStatus === 'approval_required')
+    ) {
+      return 'running';
+    }
+
+    return null;
+  }
+
+  private matches(text: string, patterns: RegExp[]): boolean {
+    return patterns.some((p) => p.test(text));
+  }
+}
