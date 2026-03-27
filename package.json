@@ -6,12 +6,17 @@
   "bin": {
     "ashral": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "scripts/postinstall.js"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "ts-node src/cli.ts",
     "start": "node dist/cli.js",
     "clean": "rm -rf dist",
-    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper node_modules/node-pty/prebuilds/darwin-arm64/pty.node 2>/dev/null || true"
+    "prepare": "tsc",
+    "postinstall": "node scripts/postinstall.js"
   },
   "dependencies": {
     "commander": "^12.1.0",

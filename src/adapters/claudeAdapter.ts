@@ -28,11 +28,14 @@ const APPROVAL_PATTERNS = [
 
 // Claude is waiting for the user to type a new message
 const WAITING_PATTERNS = [
-  /^>\s*$/m,           // bare ">" prompt line
-  /\?\s*$/,            // line ending with "?"
+  /^>\s*$/m,               // bare ">" prompt line
+  /\?\s*$/m,               // line ending with "?" — note: needs `m` flag so $ matches end-of-line, not end-of-string
+  /^\s*>\s*\d+\./m,        // Claude's numbered-choice menu cursor: "> 1. Option"
+  /^\s*\d+\.\s+\S/m,       // numbered list of options presented to the user
+  /type something/i,        // Claude Code's "5. Type something." freeform option
   /what would you like/i,
   /how can i (help|assist)/i,
-  /human:\s*$/i,       // some Claude forks show "Human:" prompt
+  /human:\s*$/im,
 ];
 
 // Claude is actively doing work
@@ -57,8 +60,11 @@ export class ClaudeAdapter extends BaseAdapter {
   readonly agentName = 'claude';
 
   getCommand(passthroughArgs: string[]): AdapterCommand {
+    // On Windows, npm CLIs are installed as .cmd wrappers — node-pty needs the
+    // explicit extension since it doesn't go through the shell to resolve it.
+    const command = process.platform === 'win32' ? 'claude.cmd' : 'claude';
     return {
-      command: 'claude',
+      command,
       args: passthroughArgs,
       // No extra env needed — claude picks up the caller's environment
     };
