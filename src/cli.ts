@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import { runSession } from './runner/runSession';
 import { ClaudeAdapter } from './adapters/claudeAdapter';
 import { NtfyNotifier } from './notifications/ntfyNotifier';
+import { FirebaseNotifier } from './notifications/firebaseNotifier';
 import type { Notifier } from './notifications/notifier';
 import type { AshralEvent } from './types/events';
 
@@ -85,13 +86,34 @@ function makeEventHandler(
 }
 
 // ── Notifier setup ────────────────────────────────────────────────────────────
-// Resolves a notifier from --notify-url flag or ASHRAL_NTFY_URL env var.
-// Returns null (silent) if neither is set.
+// Priority: Firebase (if credentials + token are set) → ntfy → silent.
+// Config is read from env vars so credentials never appear in shell history.
+//
+// Firebase env vars:
+//   ASHRAL_FIREBASE_SERVICE_ACCOUNT  path to service account JSON, or the JSON string itself
+//   ASHRAL_FCM_TOKEN                 device registration token from the mobile app
+//
+// ntfy env var:
+//   ASHRAL_NTFY_URL                  e.g. https://ntfy.sh/your-topic
 
-function resolveNotifier(flagUrl: string | undefined): Notifier | null {
-  const url = flagUrl ?? process.env.ASHRAL_NTFY_URL;
-  if (!url) return null;
-  return new NtfyNotifier(url);
+function resolveNotifier(ntfyFlagUrl: string | undefined): Notifier | null {
+  const serviceAccount = process.env.ASHRAL_FIREBASE_SERVICE_ACCOUNT;
+  const deviceToken = process.env.ASHRAL_FCM_TOKEN;
+
+  if (serviceAccount && deviceToken) {
+    try {
+      return new FirebaseNotifier({ serviceAccount, deviceToken });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[ashral] Firebase init error: ${msg}\n`);
+      process.stderr.write(`[ashral] Falling back to ntfy if configured.\n`);
+    }
+  }
+
+  const ntfyUrl = ntfyFlagUrl ?? process.env.ASHRAL_NTFY_URL;
+  if (ntfyUrl) return new NtfyNotifier(ntfyUrl);
+
+  return null;
 }
 
 // ── CLI definition ────────────────────────────────────────────────────────────
@@ -124,7 +146,8 @@ runCmd
       process.stderr.write(`\n[ashral] Starting session: ${options.name}\n`);
     }
     if (notifier) {
-      process.stderr.write(`[ashral] Push notifications enabled.\n`);
+      const provider = notifier instanceof FirebaseNotifier ? 'Firebase' : 'ntfy';
+      process.stderr.write(`[ashral] Push notifications enabled (${provider}).\n`);
     }
     process.stderr.write('\n');
 
