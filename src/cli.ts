@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import { runSession } from './runner/runSession';
 import { ClaudeAdapter } from './adapters/claudeAdapter';
+import { CodexAdapter } from './adapters/codexAdapter';
 import { NtfyNotifier } from './notifications/ntfyNotifier';
 import { FirebaseNotifier } from './notifications/firebaseNotifier';
 import { MultiNotifier } from './notifications/multiNotifier';
@@ -150,44 +151,58 @@ program
 
 const runCmd = program.command('run').description('Run an AI coding agent');
 
+async function runAgent(
+  adapter: InstanceType<typeof ClaudeAdapter> | InstanceType<typeof CodexAdapter>,
+  options: { name?: string; notifyUrl?: string },
+  passthroughArgs: string[],
+): Promise<void> {
+  const { notifier, labels } = resolveNotifier(options.notifyUrl);
+
+  process.stderr.write('\n');
+  if (options.name) {
+    process.stderr.write(`[ashral] Starting session: ${options.name}\n`);
+  }
+  process.stderr.write(
+    labels.length > 0
+      ? `[ashral] Push notifications active: ${labels.join(' + ')}\n`
+      : `[ashral] Push notifications: none configured\n`,
+  );
+  process.stderr.write('\n');
+
+  try {
+    await runSession({
+      adapter,
+      name: options.name,
+      passthroughArgs,
+      onEvent: makeEventHandler(options.name, notifier),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[ashral] Fatal: ${message}\n`);
+    process.exit(1);
+  }
+}
+
 runCmd
   .command('claude')
   .description('Start a Claude Code session')
   .option('--name <name>', 'human-readable session name')
-  .option(
-    '--notify-url <url>',
-    'ntfy.sh topic URL for push notifications (or set ASHRAL_NTFY_URL)',
-  )
+  .option('--notify-url <url>', 'ntfy.sh topic URL (or set ASHRAL_NTFY_URL)')
   .allowUnknownOption()
   .allowExcessArguments()
   .action(async (options: { name?: string; notifyUrl?: string }, command: Command) => {
-    const passthroughArgs = command.args;
-    const adapter = new ClaudeAdapter();
-    const { notifier, labels } = resolveNotifier(options.notifyUrl);
+    await runAgent(new ClaudeAdapter(), options, command.args);
+  });
 
-    process.stderr.write('\n');
-    if (options.name) {
-      process.stderr.write(`[ashral] Starting session: ${options.name}\n`);
-    }
-    if (labels.length > 0) {
-      process.stderr.write(`[ashral] Push notifications active: ${labels.join(' + ')}\n`);
-    } else {
-      process.stderr.write(`[ashral] Push notifications: none configured\n`);
-    }
-    process.stderr.write('\n');
-
-    try {
-      await runSession({
-        adapter,
-        name: options.name,
-        passthroughArgs,
-        onEvent: makeEventHandler(options.name, notifier),
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[ashral] Fatal: ${message}\n`);
-      process.exit(1);
-    }
+runCmd
+  .command('codex')
+  .description('Start an OpenAI Codex session')
+  .option('--name <name>', 'human-readable session name')
+  .option('--notify-url <url>', 'ntfy.sh topic URL (or set ASHRAL_NTFY_URL)')
+  .allowUnknownOption()
+  .allowExcessArguments()
+  .action(async (options: { name?: string; notifyUrl?: string }, command: Command) => {
+    await runAgent(new CodexAdapter(), options, command.args);
   });
 
 // ── notify test ───────────────────────────────────────────────────────────────

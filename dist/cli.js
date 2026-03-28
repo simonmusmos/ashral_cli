@@ -4,6 +4,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const commander_1 = require("commander");
 const runSession_1 = require("./runner/runSession");
 const claudeAdapter_1 = require("./adapters/claudeAdapter");
+const codexAdapter_1 = require("./adapters/codexAdapter");
 const ntfyNotifier_1 = require("./notifications/ntfyNotifier");
 const firebaseNotifier_1 = require("./notifications/firebaseNotifier");
 const multiNotifier_1 = require("./notifications/multiNotifier");
@@ -128,27 +129,15 @@ program
     .description('Control center for AI coding agents')
     .version('0.1.0');
 const runCmd = program.command('run').description('Run an AI coding agent');
-runCmd
-    .command('claude')
-    .description('Start a Claude Code session')
-    .option('--name <name>', 'human-readable session name')
-    .option('--notify-url <url>', 'ntfy.sh topic URL for push notifications (or set ASHRAL_NTFY_URL)')
-    .allowUnknownOption()
-    .allowExcessArguments()
-    .action(async (options, command) => {
-    const passthroughArgs = command.args;
-    const adapter = new claudeAdapter_1.ClaudeAdapter();
+async function runAgent(adapter, options, passthroughArgs) {
     const { notifier, labels } = resolveNotifier(options.notifyUrl);
     process.stderr.write('\n');
     if (options.name) {
         process.stderr.write(`[ashral] Starting session: ${options.name}\n`);
     }
-    if (labels.length > 0) {
-        process.stderr.write(`[ashral] Push notifications active: ${labels.join(' + ')}\n`);
-    }
-    else {
-        process.stderr.write(`[ashral] Push notifications: none configured\n`);
-    }
+    process.stderr.write(labels.length > 0
+        ? `[ashral] Push notifications active: ${labels.join(' + ')}\n`
+        : `[ashral] Push notifications: none configured\n`);
     process.stderr.write('\n');
     try {
         await (0, runSession_1.runSession)({
@@ -163,6 +152,26 @@ runCmd
         process.stderr.write(`[ashral] Fatal: ${message}\n`);
         process.exit(1);
     }
+}
+runCmd
+    .command('claude')
+    .description('Start a Claude Code session')
+    .option('--name <name>', 'human-readable session name')
+    .option('--notify-url <url>', 'ntfy.sh topic URL (or set ASHRAL_NTFY_URL)')
+    .allowUnknownOption()
+    .allowExcessArguments()
+    .action(async (options, command) => {
+    await runAgent(new claudeAdapter_1.ClaudeAdapter(), options, command.args);
+});
+runCmd
+    .command('codex')
+    .description('Start an OpenAI Codex session')
+    .option('--name <name>', 'human-readable session name')
+    .option('--notify-url <url>', 'ntfy.sh topic URL (or set ASHRAL_NTFY_URL)')
+    .allowUnknownOption()
+    .allowExcessArguments()
+    .action(async (options, command) => {
+    await runAgent(new codexAdapter_1.CodexAdapter(), options, command.args);
 });
 // ── notify test ───────────────────────────────────────────────────────────────
 program
