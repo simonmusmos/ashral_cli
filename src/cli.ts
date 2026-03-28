@@ -4,6 +4,8 @@ import { runSession } from './runner/runSession';
 import { ClaudeAdapter } from './adapters/claudeAdapter';
 import { NtfyNotifier } from './notifications/ntfyNotifier';
 import { FirebaseNotifier } from './notifications/firebaseNotifier';
+import { MultiNotifier } from './notifications/multiNotifier';
+import { loadEnvFile } from './config/loadEnv';
 import type { Notifier } from './notifications/notifier';
 import type { AshralEvent } from './types/events';
 
@@ -43,22 +45,28 @@ function makeEventHandler(
           `\n${tag} ${ts} ${CYAN}status${RESET}  ${event.from} → ${event.to}\n`,
         );
 
-        if (!notifier) break;
+        if (!notifier) {
+          process.stderr.write(`${tag} ${ts} ${DIM}(no notifier configured)${RESET}\n`);
+          break;
+        }
 
         // Notify when Claude needs the user's attention
         if (event.to === 'waiting_for_input') {
+          process.stderr.write(`${tag} ${ts} ${YELLOW}notify${RESET}  sending push notification...\n`);
           notifier.send({
             title: `Ashral - ${label}`,
             body: 'Claude is waiting for your input.',
             priority: 'high',
           });
         } else if (event.to === 'approval_required') {
+          process.stderr.write(`${tag} ${ts} ${YELLOW}notify${RESET}  sending push notification...\n`);
           notifier.send({
             title: `Ashral - ${label} [approval]`,
             body: 'Claude needs your approval before continuing.',
             priority: 'urgent',
           });
         } else if (event.to === 'error') {
+          process.stderr.write(`${tag} ${ts} ${YELLOW}notify${RESET}  sending push notification...\n`);
           notifier.send({
             title: `Ashral - ${label} [error]`,
             body: 'Claude encountered an error.',
@@ -86,37 +94,52 @@ function makeEventHandler(
 }
 
 // ── Notifier setup ────────────────────────────────────────────────────────────
-// Priority: Firebase (if credentials + token are set) → ntfy → silent.
-// Config is read from env vars so credentials never appear in shell history.
+// Builds ALL configured notifiers and fans out to them in parallel via MultiNotifier.
+// Firebase and ntfy are independent — both fire when both are configured.
 //
-// Firebase env vars:
+// Config (set in ~/.ashral/.env):
 //   ASHRAL_FIREBASE_SERVICE_ACCOUNT  path to service account JSON, or the JSON string itself
-//   ASHRAL_FCM_TOKEN                 device registration token from the mobile app
-//
-// ntfy env var:
+//   ASHRAL_FCM_TOKEN                 FCM device registration token
 //   ASHRAL_NTFY_URL                  e.g. https://ntfy.sh/your-topic
 
-function resolveNotifier(ntfyFlagUrl: string | undefined): Notifier | null {
+function resolveNotifier(ntfyFlagUrl: string | undefined): { notifier: Notifier | null; labels: string[] } {
+  const active: Notifier[] = [];
+  const labels: string[] = [];
+
+  // ── Firebase ──────────────────────────────────────────────────────────────
   const serviceAccount = process.env.ASHRAL_FIREBASE_SERVICE_ACCOUNT;
   const deviceToken = process.env.ASHRAL_FCM_TOKEN;
 
   if (serviceAccount && deviceToken) {
     try {
-      return new FirebaseNotifier({ serviceAccount, deviceToken });
+      active.push(new FirebaseNotifier({ serviceAccount, deviceToken }));
+      labels.push('Firebase');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[ashral] Firebase init error: ${msg}\n`);
-      process.stderr.write(`[ashral] Falling back to ntfy if configured.\n`);
+      process.stderr.write(`[ashral] Firebase init failed: ${msg}\n`);
     }
+  } else {
+    if (!serviceAccount) process.stderr.write(`[ashral] ${DIM}ASHRAL_FIREBASE_SERVICE_ACCOUNT not set${RESET}\n`);
+    if (!deviceToken)    process.stderr.write(`[ashral] ${DIM}ASHRAL_FCM_TOKEN not set${RESET}\n`);
   }
 
+  // ── ntfy ──────────────────────────────────────────────────────────────────
   const ntfyUrl = ntfyFlagUrl ?? process.env.ASHRAL_NTFY_URL;
-  if (ntfyUrl) return new NtfyNotifier(ntfyUrl);
+  if (ntfyUrl) {
+    active.push(new NtfyNotifier(ntfyUrl));
+    labels.push('ntfy');
+  } else {
+    process.stderr.write(`[ashral] ${DIM}ASHRAL_NTFY_URL not set${RESET}\n`);
+  }
 
-  return null;
+  if (active.length === 0) return { notifier: null, labels: [] };
+  if (active.length === 1) return { notifier: active[0], labels };
+  return { notifier: new MultiNotifier(active), labels };
 }
 
 // ── CLI definition ────────────────────────────────────────────────────────────
+
+loadEnvFile();
 
 const program = new Command();
 
@@ -140,14 +163,16 @@ runCmd
   .action(async (options: { name?: string; notifyUrl?: string }, command: Command) => {
     const passthroughArgs = command.args;
     const adapter = new ClaudeAdapter();
-    const notifier = resolveNotifier(options.notifyUrl);
+    const { notifier, labels } = resolveNotifier(options.notifyUrl);
 
+    process.stderr.write('\n');
     if (options.name) {
-      process.stderr.write(`\n[ashral] Starting session: ${options.name}\n`);
+      process.stderr.write(`[ashral] Starting session: ${options.name}\n`);
     }
-    if (notifier) {
-      const provider = notifier instanceof FirebaseNotifier ? 'Firebase' : 'ntfy';
-      process.stderr.write(`[ashral] Push notifications enabled (${provider}).\n`);
+    if (labels.length > 0) {
+      process.stderr.write(`[ashral] Push notifications active: ${labels.join(' + ')}\n`);
+    } else {
+      process.stderr.write(`[ashral] Push notifications: none configured\n`);
     }
     process.stderr.write('\n');
 
@@ -163,6 +188,30 @@ runCmd
       process.stderr.write(`[ashral] Fatal: ${message}\n`);
       process.exit(1);
     }
+  });
+
+// ── notify test ───────────────────────────────────────────────────────────────
+
+program
+  .command('notify:test')
+  .description('Send a test notification to all configured providers')
+  .action(async () => {
+    const { notifier, labels } = resolveNotifier(undefined);
+
+    if (!notifier) {
+      process.stderr.write('[ashral] No notifiers configured. Check ~/.ashral/.env\n');
+      process.exit(1);
+    }
+
+    process.stderr.write(`[ashral] Sending test notification via: ${labels.join(' + ')}\n`);
+
+    await notifier.send({
+      title: 'Ashral test',
+      body: 'If you see this, notifications are working.',
+      priority: 'high',
+    });
+
+    process.stderr.write('[ashral] Done.\n');
   });
 
 program.parse(process.argv);

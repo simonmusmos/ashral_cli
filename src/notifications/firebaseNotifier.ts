@@ -2,12 +2,23 @@ import { initializeApp, getApps, cert, type ServiceAccount } from 'firebase-admi
 import { getMessaging } from 'firebase-admin/messaging';
 import type { Notifier, NotificationPayload } from './notifier';
 
-// FCM Android priority values
-const ANDROID_PRIORITY: Record<NonNullable<NotificationPayload['priority']>, 'normal' | 'high'> = {
+// FCM message-level delivery priority (wakes up the device)
+const ANDROID_MESSAGE_PRIORITY: Record<NonNullable<NotificationPayload['priority']>, 'normal' | 'high'> = {
   low: 'normal',
-  normal: 'normal',
+  normal: 'high',
   high: 'high',
   urgent: 'high',
+};
+
+// Android notification display priority (controls heads-up / sound)
+const ANDROID_NOTIFICATION_PRIORITY: Record<
+  NonNullable<NotificationPayload['priority']>,
+  'default' | 'high' | 'max'
+> = {
+  low: 'default',
+  normal: 'high',
+  high: 'high',
+  urgent: 'max',
 };
 
 // APNs interrupt level for iOS
@@ -20,6 +31,7 @@ const APNS_INTERRUPT_LEVEL: Record<
   high: 'time-sensitive',
   urgent: 'time-sensitive',
 };
+
 
 export interface FirebaseNotifierConfig {
   /**
@@ -53,16 +65,21 @@ export class FirebaseNotifier implements Notifier {
     const priority = payload.priority ?? 'normal';
 
     try {
-      await getMessaging().send({
+      const messageId = await getMessaging().send({
         token: this.deviceToken,
         notification: {
           title: payload.title,
           body: payload.body,
         },
         android: {
-          priority: ANDROID_PRIORITY[priority],
+          // High priority wakes the device even in Doze mode
+          priority: ANDROID_MESSAGE_PRIORITY[priority],
           notification: {
+            // No channelId — let FCM create the default channel automatically,
+            // same as the Firebase Console test does.
             sound: 'default',
+            priority: ANDROID_NOTIFICATION_PRIORITY[priority],
+            defaultSound: true,
           },
         },
         apns: {
@@ -74,10 +91,10 @@ export class FirebaseNotifier implements Notifier {
           },
         },
       });
+      process.stderr.write(`[ashral] Firebase sent OK — messageId: ${messageId}\n`);
     } catch (err) {
-      // Never let a notification failure crash the session
       const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[ashral] Firebase notification error: ${msg}\n`);
+      process.stderr.write(`[ashral] Firebase error: ${msg}\n`);
     }
   }
 
