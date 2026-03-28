@@ -39,7 +39,6 @@ function makeEventHandler(sessionName, notifier) {
                 }
                 // Notify when Claude needs the user's attention
                 if (event.to === 'waiting_for_input') {
-                    process.stderr.write(`${tag} ${ts} ${YELLOW}notify${RESET}  sending push notification...\n`);
                     notifier.send({
                         title: `Ashral - ${label}`,
                         body: 'Claude is waiting for your input.',
@@ -47,7 +46,6 @@ function makeEventHandler(sessionName, notifier) {
                     });
                 }
                 else if (event.to === 'approval_required') {
-                    process.stderr.write(`${tag} ${ts} ${YELLOW}notify${RESET}  sending push notification...\n`);
                     notifier.send({
                         title: `Ashral - ${label} [approval]`,
                         body: 'Claude needs your approval before continuing.',
@@ -55,7 +53,6 @@ function makeEventHandler(sessionName, notifier) {
                     });
                 }
                 else if (event.to === 'error') {
-                    process.stderr.write(`${tag} ${ts} ${YELLOW}notify${RESET}  sending push notification...\n`);
                     notifier.send({
                         title: `Ashral - ${label} [error]`,
                         body: 'Claude encountered an error.',

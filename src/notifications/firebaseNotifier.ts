@@ -91,7 +91,7 @@ export class FirebaseNotifier implements Notifier {
           },
         },
       });
-      process.stderr.write(`[ashral] Firebase sent OK — messageId: ${messageId}\n`);
+      void messageId; // send confirmed
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[ashral] Firebase error: ${msg}\n`);
