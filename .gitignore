@@ -10,6 +10,7 @@ dist/
 *.env
 serviceAccount.json
 *serviceAccount*.json
+*service-account*.json
 firebase-adminsdk*.json
 
 # npm pack output
