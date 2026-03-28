@@ -2,7 +2,7 @@ const BACKEND_URL = 'https://ashral-web.vercel.app';
 
 export interface CreateSessionPayload {
   agent: string;
-  name?: string;
+  name: string;
 }
 
 export async function createSession(payload: CreateSessionPayload): Promise<string> {

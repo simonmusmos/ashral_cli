@@ -93,7 +93,7 @@ async function runAgent(
   let sessionId: string = randomUUID(); // fallback if backend is unreachable
 
   try {
-    sessionId = await createSession({ agent: adapter.agentName, name: options.name });
+    sessionId = await createSession({ agent: adapter.agentName, name: options.name ?? adapter.agentName });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[ashral] Warning: could not register session with backend: ${msg}\n`);

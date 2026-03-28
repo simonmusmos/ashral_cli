@@ -71,7 +71,7 @@ function makeEventHandler(sessionId, sessionName) {
 async function runAgent(adapter, options, passthroughArgs) {
     let sessionId = (0, crypto_1.randomUUID)(); // fallback if backend is unreachable
     try {
-        sessionId = await (0, backendClient_1.createSession)({ agent: adapter.agentName, name: options.name });
+        sessionId = await (0, backendClient_1.createSession)({ agent: adapter.agentName, name: options.name ?? adapter.agentName });
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
