@@ -3,10 +3,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.SessionState = void 0;
 const crypto_1 = require("crypto");
 class SessionState {
-    constructor(agent, name, cwd, emit) {
+    constructor(agent, name, cwd, emit, id) {
         this.emit = emit;
         this.session = {
-            id: (0, crypto_1.randomUUID)(),
+            id: id ?? (0, crypto_1.randomUUID)(),
             name,
             agent,
             status: 'starting',

@@ -3,6 +3,8 @@ import type { AshralEvent } from '../types/events';
 export interface RunSessionOptions {
     adapter: BaseAdapter;
     name?: string;
+    /** Pre-generated session ID — pass this to show a QR before spawning */
+    sessionId?: string;
     /** Extra args forwarded verbatim to the agent CLI (everything after --) */
     passthroughArgs: string[];
     onEvent: (event: AshralEvent) => void;

@@ -41,10 +41,10 @@ const sessionState_1 = require("./sessionState");
  * state machine. Resolves when the agent process exits.
  */
 async function runSession(options) {
-    const { adapter, name, passthroughArgs, onEvent } = options;
+    const { adapter, name, sessionId, passthroughArgs, onEvent } = options;
     const cwd = process.cwd();
     const { columns = 80, rows = 24 } = process.stdout;
-    const state = new sessionState_1.SessionState(adapter.agentName, name, cwd, onEvent);
+    const state = new sessionState_1.SessionState(adapter.agentName, name, cwd, onEvent, sessionId);
     const config = adapter.getCommand(passthroughArgs);
     // Merge adapter env overrides on top of the current environment
     const env = { ...process.env, ...(config.env ?? {}) };

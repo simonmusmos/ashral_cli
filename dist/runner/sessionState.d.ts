@@ -3,7 +3,7 @@ import type { AshralEvent } from '../types/events';
 export declare class SessionState {
     private session;
     private readonly emit;
-    constructor(agent: string, name: string | undefined, cwd: string, emit: (event: AshralEvent) => void);
+    constructor(agent: string, name: string | undefined, cwd: string, emit: (event: AshralEvent) => void, id?: string);
     get id(): string;
     get status(): SessionStatus;
     /** Transition to a new status and emit a status_changed event. No-ops on same status. */

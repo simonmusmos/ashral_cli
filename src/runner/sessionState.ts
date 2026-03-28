@@ -11,10 +11,11 @@ export class SessionState {
     name: string | undefined,
     cwd: string,
     emit: (event: AshralEvent) => void,
+    id?: string,
   ) {
     this.emit = emit;
     this.session = {
-      id: randomUUID(),
+      id: id ?? randomUUID(),
       name,
       agent,
       status: 'starting',

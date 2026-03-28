@@ -5,10 +5,11 @@ const commander_1 = require("commander");
 const runSession_1 = require("./runner/runSession");
 const claudeAdapter_1 = require("./adapters/claudeAdapter");
 const codexAdapter_1 = require("./adapters/codexAdapter");
-const ntfyNotifier_1 = require("./notifications/ntfyNotifier");
-const firebaseNotifier_1 = require("./notifications/firebaseNotifier");
-const multiNotifier_1 = require("./notifications/multiNotifier");
+const backendNotifier_1 = require("./notifications/backendNotifier");
 const loadEnv_1 = require("./config/loadEnv");
+const showSessionQr_1 = require("./qr/showSessionQr");
+const backendClient_1 = require("./api/backendClient");
+const crypto_1 = require("crypto"); // fallback when backend is unreachable
 // ── ANSI helpers ─────────────────────────────────────────────────────────────
 const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
@@ -19,25 +20,18 @@ const GREEN = '\x1b[32m';
 function timestamp() {
     return new Date().toISOString().split('T')[1].replace('Z', '');
 }
-// ── Event handler factory ────────────────────────────────────────────────────
-// Returns an onEvent callback. Logs to stderr and fires push notifications
-// when Claude needs attention.
-function makeEventHandler(sessionName, notifier) {
+// ── Event handler ─────────────────────────────────────────────────────────────
+function makeEventHandler(sessionId, sessionName) {
     const tag = `${DIM}[ashral]${RESET}`;
     const label = sessionName ? `"${sessionName}"` : 'session';
+    const notifier = new backendNotifier_1.BackendNotifier(sessionId);
     return function onEvent(event) {
-        // Raw output is already mirrored to stdout — skip it here
         if (event.type === 'output')
             return;
         const ts = `${DIM}${timestamp()}${RESET}`;
         switch (event.type) {
             case 'status_changed': {
                 process.stderr.write(`\n${tag} ${ts} ${CYAN}status${RESET}  ${event.from} → ${event.to}\n`);
-                if (!notifier) {
-                    process.stderr.write(`${tag} ${ts} ${DIM}(no notifier configured)${RESET}\n`);
-                    break;
-                }
-                // Notify when Claude needs the user's attention
                 if (event.to === 'waiting_for_input') {
                     notifier.send({
                         title: `Ashral - ${label}`,
@@ -73,50 +67,34 @@ function makeEventHandler(sessionName, notifier) {
         }
     };
 }
-// ── Notifier setup ────────────────────────────────────────────────────────────
-// Builds ALL configured notifiers and fans out to them in parallel via MultiNotifier.
-// Firebase and ntfy are independent — both fire when both are configured.
-//
-// Config (set in ~/.ashral/.env):
-//   ASHRAL_FIREBASE_SERVICE_ACCOUNT  path to service account JSON, or the JSON string itself
-//   ASHRAL_FCM_TOKEN                 FCM device registration token
-//   ASHRAL_NTFY_URL                  e.g. https://ntfy.sh/your-topic
-function resolveNotifier(ntfyFlagUrl) {
-    const active = [];
-    const labels = [];
-    // ── Firebase ──────────────────────────────────────────────────────────────
-    const serviceAccount = process.env.ASHRAL_FIREBASE_SERVICE_ACCOUNT;
-    const deviceToken = process.env.ASHRAL_FCM_TOKEN;
-    if (serviceAccount && deviceToken) {
-        try {
-            active.push(new firebaseNotifier_1.FirebaseNotifier({ serviceAccount, deviceToken }));
-            labels.push('Firebase');
-        }
-        catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            process.stderr.write(`[ashral] Firebase init failed: ${msg}\n`);
-        }
+// ── Shared run logic ──────────────────────────────────────────────────────────
+async function runAgent(adapter, options, passthroughArgs) {
+    let sessionId = (0, crypto_1.randomUUID)(); // fallback if backend is unreachable
+    try {
+        sessionId = await (0, backendClient_1.createSession)({ agent: adapter.agentName, name: options.name });
     }
-    else {
-        if (!serviceAccount)
-            process.stderr.write(`[ashral] ${DIM}ASHRAL_FIREBASE_SERVICE_ACCOUNT not set${RESET}\n`);
-        if (!deviceToken)
-            process.stderr.write(`[ashral] ${DIM}ASHRAL_FCM_TOKEN not set${RESET}\n`);
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[ashral] Warning: could not register session with backend: ${msg}\n`);
     }
-    // ── ntfy ──────────────────────────────────────────────────────────────────
-    const ntfyUrl = ntfyFlagUrl ?? process.env.ASHRAL_NTFY_URL;
-    if (ntfyUrl) {
-        active.push(new ntfyNotifier_1.NtfyNotifier(ntfyUrl));
-        labels.push('ntfy');
+    (0, showSessionQr_1.showSessionQr)(sessionId, options.name);
+    try {
+        await (0, runSession_1.runSession)({
+            adapter,
+            name: options.name,
+            sessionId,
+            passthroughArgs,
+            onEvent: makeEventHandler(sessionId, options.name),
+        });
     }
-    else {
-        process.stderr.write(`[ashral] ${DIM}ASHRAL_NTFY_URL not set${RESET}\n`);
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[ashral] Fatal: ${message}\n`);
+        process.exit(1);
     }
-    if (active.length === 0)
-        return { notifier: null, labels: [] };
-    if (active.length === 1)
-        return { notifier: active[0], labels };
-    return { notifier: new multiNotifier_1.MultiNotifier(active), labels };
+    finally {
+        await (0, backendClient_1.deleteSession)(sessionId);
+    }
 }
 // ── CLI definition ────────────────────────────────────────────────────────────
 (0, loadEnv_1.loadEnvFile)();
@@ -126,35 +104,10 @@ program
     .description('Control center for AI coding agents')
     .version('0.1.0');
 const runCmd = program.command('run').description('Run an AI coding agent');
-async function runAgent(adapter, options, passthroughArgs) {
-    const { notifier, labels } = resolveNotifier(options.notifyUrl);
-    process.stderr.write('\n');
-    if (options.name) {
-        process.stderr.write(`[ashral] Starting session: ${options.name}\n`);
-    }
-    process.stderr.write(labels.length > 0
-        ? `[ashral] Push notifications active: ${labels.join(' + ')}\n`
-        : `[ashral] Push notifications: none configured\n`);
-    process.stderr.write('\n');
-    try {
-        await (0, runSession_1.runSession)({
-            adapter,
-            name: options.name,
-            passthroughArgs,
-            onEvent: makeEventHandler(options.name, notifier),
-        });
-    }
-    catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[ashral] Fatal: ${message}\n`);
-        process.exit(1);
-    }
-}
 runCmd
     .command('claude')
     .description('Start a Claude Code session')
     .option('--name <name>', 'human-readable session name')
-    .option('--notify-url <url>', 'ntfy.sh topic URL (or set ASHRAL_NTFY_URL)')
     .allowUnknownOption()
     .allowExcessArguments()
     .action(async (options, command) => {
@@ -164,28 +117,18 @@ runCmd
     .command('codex')
     .description('Start an OpenAI Codex session')
     .option('--name <name>', 'human-readable session name')
-    .option('--notify-url <url>', 'ntfy.sh topic URL (or set ASHRAL_NTFY_URL)')
     .allowUnknownOption()
     .allowExcessArguments()
     .action(async (options, command) => {
     await runAgent(new codexAdapter_1.CodexAdapter(), options, command.args);
 });
-// ── notify test ───────────────────────────────────────────────────────────────
+// ── notify:test ───────────────────────────────────────────────────────────────
 program
     .command('notify:test')
-    .description('Send a test notification to all configured providers')
-    .action(async () => {
-    const { notifier, labels } = resolveNotifier(undefined);
-    if (!notifier) {
-        process.stderr.write('[ashral] No notifiers configured. Check ~/.ashral/.env\n');
-        process.exit(1);
-    }
-    process.stderr.write(`[ashral] Sending test notification via: ${labels.join(' + ')}\n`);
-    await notifier.send({
-        title: 'Ashral test',
-        body: 'If you see this, notifications are working.',
-        priority: 'high',
-    });
+    .description('Send a test notification via backend')
+    .argument('<sessionId>', 'session ID to notify')
+    .action(async (sessionId) => {
+    await (0, backendClient_1.notifySession)(sessionId, 'Ashral test', 'If you see this, notifications are working.', 'high');
     process.stderr.write('[ashral] Done.\n');
 });
 program.parse(process.argv);

@@ -4,7 +4,7 @@ node_modules/
 # Build output
 dist/
 
-# Environment & secrets
+# Environment & secrets — never commit credentials
 .env
 .env.*
 *.env
