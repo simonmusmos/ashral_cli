@@ -6,7 +6,7 @@ import { CodexAdapter } from './adapters/codexAdapter';
 import { BackendNotifier } from './notifications/backendNotifier';
 import { loadEnvFile } from './config/loadEnv';
 import { showSessionQr } from './qr/showSessionQr';
-import { createSession, deleteSession, notifySession } from './api/backendClient';
+import { createSession, deleteSession, notifySession, OutdatedClientError } from './api/backendClient';
 import { randomUUID } from 'crypto'; // fallback when backend is unreachable
 import type { AshralEvent } from './types/events';
 
@@ -95,6 +95,10 @@ async function runAgent(
   try {
     sessionId = await createSession({ agent: adapter.agentName, name: options.name ?? adapter.agentName });
   } catch (err) {
+    if (err instanceof OutdatedClientError) {
+      process.stderr.write(`\n${RED}[ashral] ${err.message}${RESET}\n\n`);
+      process.exit(1);
+    }
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[ashral] Warning: could not register session with backend: ${msg}\n`);
   }

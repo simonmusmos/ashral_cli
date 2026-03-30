@@ -74,6 +74,10 @@ async function runAgent(adapter, options, passthroughArgs) {
         sessionId = await (0, backendClient_1.createSession)({ agent: adapter.agentName, name: options.name ?? adapter.agentName });
     }
     catch (err) {
+        if (err instanceof backendClient_1.OutdatedClientError) {
+            process.stderr.write(`\n${RED}[ashral] ${err.message}${RESET}\n\n`);
+            process.exit(1);
+        }
         const msg = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[ashral] Warning: could not register session with backend: ${msg}\n`);
     }

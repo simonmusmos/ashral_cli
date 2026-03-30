@@ -1,4 +1,13 @@
+import { version } from '../../package.json';
+
 const BACKEND_URL = 'https://ashral-web.vercel.app';
+
+export class OutdatedClientError extends Error {
+  constructor() {
+    super('Your Ashral CLI is outdated. Run `npm install -g ashral` to upgrade.');
+    this.name = 'OutdatedClientError';
+  }
+}
 
 export interface CreateSessionPayload {
   agent: string;
@@ -8,9 +17,16 @@ export interface CreateSessionPayload {
 export async function createSession(payload: CreateSessionPayload): Promise<string> {
   const res = await fetch(`${BACKEND_URL}/sessions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Ashral-Version': version,
+    },
     body: JSON.stringify(payload),
   });
+
+  if (res.status === 426) {
+    throw new OutdatedClientError();
+  }
 
   if (!res.ok) {
     throw new Error(`Failed to create session: ${res.status} ${res.statusText}`);
