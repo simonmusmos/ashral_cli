@@ -20,6 +20,11 @@ export declare abstract class BaseAdapter {
     /** Human-readable agent identifier, e.g. "claude" */
     abstract readonly agentName: string;
     /**
+     * Checks whether the agent CLI is installed and on PATH.
+     * Throws a descriptive error if not found.
+     */
+    verify(): void;
+    /**
      * Returns the command and args needed to start the agent.
      * @param passthroughArgs - extra args forwarded from the CLI (after --)
      */

@@ -77,6 +77,13 @@ function makeEventHandler(sessionId, sessionName) {
 }
 // ── Shared run logic ──────────────────────────────────────────────────────────
 async function runAgent(adapter, options, passthroughArgs) {
+    try {
+        adapter.verify();
+    }
+    catch (err) {
+        process.stderr.write(`\n${RED}[ashral] ${err instanceof Error ? err.message : err}${RESET}\n\n`);
+        process.exit(1);
+    }
     let sessionId = (0, crypto_1.randomUUID)(); // fallback if backend is unreachable
     try {
         sessionId = await (0, backendClient_1.createSession)({ agent: adapter.agentName, name: options.name ?? adapter.agentName });

@@ -98,6 +98,13 @@ async function runAgent(
   options: { name?: string },
   passthroughArgs: string[],
 ): Promise<void> {
+  try {
+    adapter.verify();
+  } catch (err) {
+    process.stderr.write(`\n${RED}[ashral] ${err instanceof Error ? err.message : err}${RESET}\n\n`);
+    process.exit(1);
+  }
+
   let sessionId: string = randomUUID(); // fallback if backend is unreachable
 
   try {

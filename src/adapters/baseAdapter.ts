@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 import type { SessionStatus } from '../types/session';
 
 export interface AdapterCommand {
@@ -21,6 +22,23 @@ export interface AdapterCommand {
 export abstract class BaseAdapter {
   /** Human-readable agent identifier, e.g. "claude" */
   abstract readonly agentName: string;
+
+  /**
+   * Checks whether the agent CLI is installed and on PATH.
+   * Throws a descriptive error if not found.
+   */
+  verify(): void {
+    const { command } = this.getCommand([]);
+    const which = process.platform === 'win32' ? 'where' : 'which';
+    try {
+      execSync(`${which} ${command}`, { stdio: 'ignore' });
+    } catch {
+      throw new Error(
+        `"${command}" is not installed or not on PATH.\n` +
+        `Install it first, then re-run: ashral run ${this.agentName}`,
+      );
+    }
+  }
 
   /**
    * Returns the command and args needed to start the agent.
