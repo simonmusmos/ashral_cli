@@ -33,7 +33,7 @@ export class SessionState {
   }
 
   /** Transition to a new status and emit a status_changed event. No-ops on same status. */
-  transition(to: SessionStatus): void {
+  transition(to: SessionStatus, text?: string): void {
     const from = this.session.status;
     if (from === to) return;
 
@@ -45,6 +45,7 @@ export class SessionState {
       timestamp: new Date(),
       from,
       to,
+      ...(text !== undefined && { text }),
     };
     this.emit(event);
   }

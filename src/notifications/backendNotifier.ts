@@ -19,6 +19,7 @@ export class BackendNotifier implements Notifier {
       payload.title,
       payload.body,
       payload.priority ?? 'normal',
+      payload.rawText,
     );
   }
 }

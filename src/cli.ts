@@ -49,18 +49,21 @@ function makeEventHandler(
             title: label,
             body: 'AI is waiting for your input.',
             priority: 'high',
+            rawText: event.text,
           });
         } else if (event.to === 'approval_required') {
           notifier.send({
             title: label,
             body: 'AI is waiting for your approval.',
             priority: 'urgent',
+            rawText: event.text,
           });
         } else if (event.to === 'error') {
           notifier.send({
             title: label,
             body: 'AI encountered an error.',
             priority: 'high',
+            rawText: event.text,
           });
         }
         break;

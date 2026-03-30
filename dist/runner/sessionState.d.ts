@@ -7,7 +7,7 @@ export declare class SessionState {
     get id(): string;
     get status(): SessionStatus;
     /** Transition to a new status and emit a status_changed event. No-ops on same status. */
-    transition(to: SessionStatus): void;
+    transition(to: SessionStatus, text?: string): void;
     /** Mark the session as done. Sets endedAt and transitions to completed. */
     complete(exitCode: number): void;
     snapshot(): Readonly<Session>;

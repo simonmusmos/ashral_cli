@@ -3,6 +3,43 @@ import type { BaseAdapter } from '../adapters/baseAdapter';
 import { SessionState } from './sessionState';
 import type { AshralEvent } from '../types/events';
 
+const ANSI_RE = /\x1B\[[0-9;]*[A-Za-z]|\x1B[@-_][0-?]*[ -/]*[@-~]/g;
+const BUFFER_SIZE = 40;
+
+/**
+ * Rolling buffer of the last N clean lines of PTY output.
+ * The question text often arrives in an earlier chunk than the one that
+ * triggers the status change, so we look back across recent output.
+ */
+function makeOutputBuffer() {
+  const lines: string[] = [];
+
+  function push(raw: string): void {
+    const cleaned = raw
+      .replace(ANSI_RE, '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 1);
+    lines.push(...cleaned);
+    if (lines.length > BUFFER_SIZE) lines.splice(0, lines.length - BUFFER_SIZE);
+  }
+
+  function extractBody(): string | undefined {
+    const candidates = lines
+      .filter((l) => !l.includes('[ashral]'))
+      .filter((l) => !/^\d+\.\s/.test(l))
+      .filter((l) => !/^[╭╰╮╯│─❯>\s□↓↑←→]+$/.test(l))
+      .filter((l) => !/→\s*\w+_\w+/.test(l));
+
+    // Prefer the last line ending with "?" — most likely the actual question
+    const question = [...candidates].reverse().find((l) => l.endsWith('?'));
+    const body = question ?? candidates[candidates.length - 1];
+    return body ? body.slice(0, 200) : undefined;
+  }
+
+  return { push, extractBody };
+}
+
 export interface RunSessionOptions {
   adapter: BaseAdapter;
   name?: string;
@@ -38,6 +75,8 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
 
   state.transition('running');
 
+  const buffer = makeOutputBuffer();
+
   // ── Output: mirror PTY → stdout, inspect for state changes ─────────────────
   term.onData((data: string) => {
     // Write raw (ANSI-preserved) data so the terminal renders correctly
@@ -50,9 +89,11 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
       data,
     });
 
+    buffer.push(data);
+
     const next = adapter.detectStatus(data, state.status);
     if (next !== null) {
-      state.transition(next);
+      state.transition(next, buffer.extractBody());
     }
   });
 

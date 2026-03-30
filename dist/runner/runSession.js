@@ -36,6 +36,38 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.runSession = runSession;
 const pty = __importStar(require("node-pty"));
 const sessionState_1 = require("./sessionState");
+const ANSI_RE = /\x1B\[[0-9;]*[A-Za-z]|\x1B[@-_][0-?]*[ -/]*[@-~]/g;
+const BUFFER_SIZE = 40;
+/**
+ * Rolling buffer of the last N clean lines of PTY output.
+ * The question text often arrives in an earlier chunk than the one that
+ * triggers the status change, so we look back across recent output.
+ */
+function makeOutputBuffer() {
+    const lines = [];
+    function push(raw) {
+        const cleaned = raw
+            .replace(ANSI_RE, '')
+            .split('\n')
+            .map((l) => l.trim())
+            .filter((l) => l.length > 1);
+        lines.push(...cleaned);
+        if (lines.length > BUFFER_SIZE)
+            lines.splice(0, lines.length - BUFFER_SIZE);
+    }
+    function extractBody() {
+        const candidates = lines
+            .filter((l) => !l.includes('[ashral]'))
+            .filter((l) => !/^\d+\.\s/.test(l))
+            .filter((l) => !/^[╭╰╮╯│─❯>\s□↓↑←→]+$/.test(l))
+            .filter((l) => !/→\s*\w+_\w+/.test(l));
+        // Prefer the last line ending with "?" — most likely the actual question
+        const question = [...candidates].reverse().find((l) => l.endsWith('?'));
+        const body = question ?? candidates[candidates.length - 1];
+        return body ? body.slice(0, 200) : undefined;
+    }
+    return { push, extractBody };
+}
 /**
  * Spawns the agent inside a PTY, bridges all I/O, and drives the session
  * state machine. Resolves when the agent process exits.
@@ -56,6 +88,7 @@ async function runSession(options) {
         env,
     });
     state.transition('running');
+    const buffer = makeOutputBuffer();
     // ── Output: mirror PTY → stdout, inspect for state changes ─────────────────
     term.onData((data) => {
         // Write raw (ANSI-preserved) data so the terminal renders correctly
@@ -66,9 +99,10 @@ async function runSession(options) {
             timestamp: new Date(),
             data,
         });
+        buffer.push(data);
         const next = adapter.detectStatus(data, state.status);
         if (next !== null) {
-            state.transition(next);
+            state.transition(next, buffer.extractBody());
         }
     });
     // ── Input: forward stdin → PTY ──────────────────────────────────────────────

@@ -5,6 +5,8 @@ export interface NotificationPayload {
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   /** Optional deep-link or action URL */
   url?: string;
+  /** Raw terminal output — backend uses this to extract the clean question via AI */
+  rawText?: string;
 }
 
 /**

@@ -23,6 +23,8 @@ export interface StatusChangedEvent extends BaseEvent {
   type: 'status_changed';
   from: SessionStatus;
   to: SessionStatus;
+  /** Cleaned text from the output chunk that triggered this transition */
+  text?: string;
 }
 
 // Fired when the adapter detects that the agent has issued a prompt to the user

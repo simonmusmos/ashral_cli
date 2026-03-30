@@ -15,13 +15,17 @@ function stripAnsi(raw) {
  */
 // Claude is prompting the user to approve a tool call or destructive action
 const APPROVAL_PATTERNS = [
+    /claude wants to/i, // "Claude wants to use Bash"
     /do you want to/i,
     /allow this/i,
+    /allow all/i, // "Allow all Bash commands for this session"
+    /yes,?\s+and don't ask/i, // "Yes, and don't ask again"
     /\(y\/n\)/i,
     /\[y\/n\]/i,
     /yes\/no/i,
     /press enter to confirm/i,
     /approve|deny/i,
+    /^\s*❯?\s*allow\s*$/im, // standalone "Allow" / "❯ Allow" option line
 ];
 // Claude is waiting for the user to type a new message
 const WAITING_PATTERNS = [

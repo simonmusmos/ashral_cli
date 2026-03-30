@@ -37,6 +37,7 @@ function makeEventHandler(sessionId, sessionName) {
                         title: label,
                         body: 'AI is waiting for your input.',
                         priority: 'high',
+                        rawText: event.text,
                     });
                 }
                 else if (event.to === 'approval_required') {
@@ -44,6 +45,7 @@ function makeEventHandler(sessionId, sessionName) {
                         title: label,
                         body: 'AI is waiting for your approval.',
                         priority: 'urgent',
+                        rawText: event.text,
                     });
                 }
                 else if (event.to === 'error') {
@@ -51,6 +53,7 @@ function makeEventHandler(sessionId, sessionName) {
                         title: label,
                         body: 'AI encountered an error.',
                         priority: 'high',
+                        rawText: event.text,
                     });
                 }
                 break;

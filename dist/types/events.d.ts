@@ -13,6 +13,8 @@ export interface StatusChangedEvent extends BaseEvent {
     type: 'status_changed';
     from: SessionStatus;
     to: SessionStatus;
+    /** Cleaned text from the output chunk that triggered this transition */
+    text?: string;
 }
 export interface AgentPromptEvent extends BaseEvent {
     type: 'agent_prompt';

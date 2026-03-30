@@ -49,11 +49,12 @@ export async function notifySession(
   title: string,
   body: string,
   priority: string,
+  rawText?: string,
 ): Promise<void> {
   await fetch(`${BACKEND_URL}/sessions/${sessionId}/notify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, body, priority }),
+    body: JSON.stringify({ title, body, priority, rawText }),
   }).catch(() => {});
 }
 
