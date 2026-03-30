@@ -63,7 +63,13 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
   if (isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
 
-  const onStdinData = (chunk: Buffer) => term.write(chunk.toString('binary'));
+  const onStdinData = (chunk: Buffer) => {
+    term.write(chunk.toString('binary'));
+    // User responded — reset to running so the next question fires a notification
+    if (state.status === 'waiting_for_input' || state.status === 'approval_required') {
+      state.transition('running');
+    }
+  };
   process.stdin.on('data', onStdinData);
 
   // ── Resize: keep PTY columns/rows in sync with the terminal ─────────────────
