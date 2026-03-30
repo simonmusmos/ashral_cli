@@ -46,20 +46,20 @@ function makeEventHandler(
 
         if (event.to === 'waiting_for_input') {
           notifier.send({
-            title: `Ashral - ${label}`,
-            body: 'Claude is waiting for your input.',
+            title: label,
+            body: 'AI is waiting for your input.',
             priority: 'high',
           });
         } else if (event.to === 'approval_required') {
           notifier.send({
-            title: `Ashral - ${label} [approval]`,
-            body: 'Claude needs your approval before continuing.',
+            title: label,
+            body: 'AI is waiting for your approval.',
             priority: 'urgent',
           });
         } else if (event.to === 'error') {
           notifier.send({
-            title: `Ashral - ${label} [error]`,
-            body: 'Claude encountered an error.',
+            title: label,
+            body: 'AI encountered an error.',
             priority: 'high',
           });
         }
@@ -78,6 +78,11 @@ function makeEventHandler(
         process.stderr.write(
           `\n${tag} ${ts} ${GREEN}done${RESET}     exit code ${event.exitCode}\n`,
         );
+        notifier.send({
+          title: label,
+          body: 'Session completed.',
+          priority: 'normal',
+        });
         break;
     }
   };
