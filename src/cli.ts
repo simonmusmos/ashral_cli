@@ -10,18 +10,8 @@ import { createSession, deleteSession, notifySession, OutdatedClientError } from
 import { randomUUID } from 'crypto'; // fallback when backend is unreachable
 import type { AshralEvent } from './types/events';
 
-// ── ANSI helpers ─────────────────────────────────────────────────────────────
-
-const DIM = '\x1b[2m';
-const RESET = '\x1b[0m';
-const CYAN = '\x1b[36m';
-const YELLOW = '\x1b[33m';
 const RED = '\x1b[31m';
-const GREEN = '\x1b[32m';
-
-function timestamp(): string {
-  return new Date().toISOString().split('T')[1].replace('Z', '');
-}
+const RESET = '\x1b[0m';
 
 // ── Event handler ─────────────────────────────────────────────────────────────
 
@@ -29,21 +19,14 @@ function makeEventHandler(
   sessionId: string,
   sessionName: string | undefined,
 ): (event: AshralEvent) => void {
-  const tag   = `${DIM}[ashral]${RESET}`;
   const label = sessionName ? `"${sessionName}"` : 'session';
   const notifier = new BackendNotifier(sessionId);
 
   return function onEvent(event: AshralEvent): void {
     if (event.type === 'output') return;
 
-    const ts = `${DIM}${timestamp()}${RESET}`;
-
     switch (event.type) {
       case 'status_changed': {
-        process.stderr.write(
-          `\n${tag} ${ts} ${CYAN}status${RESET}  ${event.from} → ${event.to}\n`,
-        );
-
         if (event.to === 'waiting_for_input') {
           notifier.send({
             title: label,
@@ -69,18 +52,7 @@ function makeEventHandler(
         break;
       }
 
-      case 'agent_prompt':
-        process.stderr.write(`${tag} ${ts} ${YELLOW}prompt${RESET}   ${event.prompt}\n`);
-        break;
-
-      case 'error':
-        process.stderr.write(`${tag} ${ts} ${RED}error${RESET}    ${event.message}\n`);
-        break;
-
       case 'completed':
-        process.stderr.write(
-          `\n${tag} ${ts} ${GREEN}done${RESET}     exit code ${event.exitCode}\n`,
-        );
         notifier.send({
           title: label,
           body: 'Session completed.',
