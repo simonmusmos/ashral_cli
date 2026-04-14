@@ -2,17 +2,17 @@ import * as pty from 'node-pty';
 import type { BaseAdapter } from '../adapters/baseAdapter';
 import { SessionState } from './sessionState';
 import type { AshralEvent } from '../types/events';
+import { startAnthropicProxy } from '../proxy/anthropicProxy';
 
 const ANSI_RE = /\x1B\[[0-9;]*[A-Za-z]|\x1B[@-_][0-?]*[ -/]*[@-~]/g;
-const BUFFER_SIZE = 40;
 
 /**
  * Rolling buffer of the last N clean lines of PTY output.
- * The question text often arrives in an earlier chunk than the one that
- * triggers the status change, so we look back across recent output.
+ * Used only for status detection and push notification body extraction.
  */
 function makeOutputBuffer() {
   const lines: string[] = [];
+  const MAX = 40;
 
   function push(raw: string): void {
     const cleaned = raw
@@ -21,7 +21,7 @@ function makeOutputBuffer() {
       .map((l) => l.trim())
       .filter((l) => l.length > 1);
     lines.push(...cleaned);
-    if (lines.length > BUFFER_SIZE) lines.splice(0, lines.length - BUFFER_SIZE);
+    if (lines.length > MAX) lines.splice(0, lines.length - MAX);
   }
 
   function extractBody(): string | undefined {
@@ -31,7 +31,6 @@ function makeOutputBuffer() {
       .filter((l) => !/^[╭╰╮╯│─❯>\s□↓↑←→]+$/.test(l))
       .filter((l) => !/→\s*\w+_\w+/.test(l));
 
-    // Prefer the last line ending with "?" — most likely the actual question
     const question = [...candidates].reverse().find((l) => l.endsWith('?'));
     const body = question ?? candidates[candidates.length - 1];
     return body ? body.slice(0, 200) : undefined;
@@ -62,8 +61,14 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
   const state = new SessionState(adapter.agentName, name, cwd, onEvent, sessionId);
   const config = adapter.getCommand(passthroughArgs);
 
-  // Merge adapter env overrides on top of the current environment
-  const env = { ...(process.env as Record<string, string>), ...(config.env ?? {}) };
+  // Start the transparent Anthropic proxy — Claude Code's API traffic flows
+  // through it so we can capture clean assistant text without touching the PTY.
+  const proxy = await startAnthropicProxy(state.id).catch(() => null);
+
+  const baseEnv = { ...(process.env as Record<string, string>), ...(config.env ?? {}) };
+  const env: Record<string, string> = proxy
+    ? { ...baseEnv, ANTHROPIC_BASE_URL: `http://127.0.0.1:${proxy.port}` }
+    : baseEnv;
 
   const term = pty.spawn(config.command, config.args, {
     name: 'xterm-color',
@@ -79,7 +84,6 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
 
   // ── Output: mirror PTY → stdout, inspect for state changes ─────────────────
   term.onData((data: string) => {
-    // Write raw (ANSI-preserved) data so the terminal renders correctly
     process.stdout.write(data);
 
     onEvent({
@@ -98,15 +102,12 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
   });
 
   // ── Input: forward stdin → PTY ──────────────────────────────────────────────
-  // Raw mode disables line buffering and lets control characters (Ctrl+C etc.)
-  // pass through as data to the PTY rather than being handled by Node.
   const isTTY = process.stdin.isTTY ?? false;
   if (isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
 
   const onStdinData = (chunk: Buffer) => {
     term.write(chunk.toString('binary'));
-    // User responded — reset to running so the next question fires a notification
     if (state.status === 'waiting_for_input' || state.status === 'approval_required') {
       state.transition('running');
     }
@@ -120,7 +121,6 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
   };
   process.stdout.on('resize', onResize);
 
-  // ── Cleanup helper ───────────────────────────────────────────────────────────
   function teardown() {
     process.stdin.removeListener('data', onStdinData);
     process.stdout.removeListener('resize', onResize);
@@ -128,12 +128,12 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
     process.stdin.pause();
   }
 
-  return new Promise((resolve, reject) => {
-    term.onExit(({ exitCode, signal }) => {
+  return new Promise((resolve) => {
+    term.onExit(async ({ exitCode, signal }) => {
       teardown();
+      await proxy?.stop();
 
       if (signal && exitCode !== 0) {
-        // Process was killed by a signal — surface as an error event
         onEvent({
           type: 'error',
           sessionId: state.id,
@@ -145,12 +145,6 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
 
       state.complete(exitCode);
       resolve();
-    });
-
-    // Catch spawn errors (e.g. command not found)
-    process.nextTick(() => {
-      // node-pty doesn't emit an 'error' event; spawn failures surface as
-      // immediate exits with code 127 or throw synchronously — handled above.
     });
   });
 }

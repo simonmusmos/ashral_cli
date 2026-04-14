@@ -58,6 +58,40 @@ export async function notifySession(
   }).catch(() => {});
 }
 
+export async function appendSessionOutput(
+  sessionId: string,
+  text: string,
+  stream: 'stdout' | 'stderr' = 'stdout',
+  { throwOnError = false }: { throwOnError?: boolean } = {},
+): Promise<void> {
+  const req = fetch(`${BACKEND_URL}/sessions/${sessionId}/output`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, stream }),
+  });
+  if (throwOnError) {
+    await req;
+  } else {
+    await req.catch(() => {});
+  }
+}
+
+export async function completeSession(sessionId: string, output?: string): Promise<void> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/sessions/${sessionId}/complete`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ output }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      process.stderr.write(`[ashral] completeSession failed: ${res.status} ${body}\n`);
+    }
+  } catch (err) {
+    process.stderr.write(`[ashral] completeSession error: ${err}\n`);
+  }
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   await fetch(`${BACKEND_URL}/sessions/${sessionId}`, {
     method: 'DELETE',
