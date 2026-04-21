@@ -36,12 +36,33 @@ export async function createSession(payload: CreateSessionPayload): Promise<stri
   return data.sessionId;
 }
 
-export async function updateSessionStatus(sessionId: string, status: string): Promise<void> {
+export interface PendingAction {
+  question?: string;
+  options: string[];
+}
+
+export async function updateSessionStatus(
+  sessionId: string,
+  status: string,
+  pendingAction?: PendingAction,
+): Promise<void> {
   await fetch(`${BACKEND_URL}/sessions/${sessionId}/status`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
+    body: JSON.stringify({ status, ...(pendingAction && { pendingAction }) }),
   }).catch(() => {}); // best-effort, don't interrupt the session
+}
+
+/** Poll for a response the mobile user submitted. Returns the action string or null. */
+export async function getSessionResponse(sessionId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/sessions/${sessionId}/response`);
+    if (!res.ok) return null;
+    const data = await res.json() as { response: string | null };
+    return data.response ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function notifySession(
@@ -89,6 +110,43 @@ export async function completeSession(sessionId: string, output?: string): Promi
     }
   } catch (err) {
     process.stderr.write(`[ashral] completeSession error: ${err}\n`);
+  }
+}
+
+export async function updateSessionStats(
+  sessionId: string,
+  delta: { calls?: number; tokens?: number; files?: number; cost?: number },
+): Promise<void> {
+  await fetch(`${BACKEND_URL}/sessions/${sessionId}/stats`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(delta),
+  }).catch(() => {});
+}
+
+export async function saveAgentSessionId(sessionId: string, agentSessionId: string): Promise<void> {
+  await fetch(`${BACKEND_URL}/sessions/${sessionId}/agent-session`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentSessionId }),
+  }).catch(() => {});
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  name: string;
+  agent: string;
+  status: string;
+  agentSessionId?: string;
+}
+
+export async function getSession(sessionId: string): Promise<SessionSummary | null> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/sessions/${sessionId}`);
+    if (!res.ok) return null;
+    return await res.json() as SessionSummary;
+  } catch {
+    return null;
   }
 }
 

@@ -37,6 +37,7 @@ exports.runSession = runSession;
 const pty = __importStar(require("node-pty"));
 const sessionState_1 = require("./sessionState");
 const anthropicProxy_1 = require("../proxy/anthropicProxy");
+const backendClient_1 = require("../api/backendClient");
 const ANSI_RE = /\x1B\[[0-9;]*[A-Za-z]|\x1B[@-_][0-?]*[ -/]*[@-~]/g;
 /**
  * Rolling buffer of the last N clean lines of PTY output.
@@ -44,10 +45,17 @@ const ANSI_RE = /\x1B\[[0-9;]*[A-Za-z]|\x1B[@-_][0-?]*[ -/]*[@-~]/g;
  */
 function makeOutputBuffer() {
     const lines = [];
-    const MAX = 40;
+    const MAX = 80;
     function push(raw) {
         const cleaned = raw
-            .replace(ANSI_RE, '')
+            // ink uses cursor-forward (\x1b[nC) for spaces — restore them before stripping
+            .replace(/\x1B\[(\d*)C/g, (_, n) => ' '.repeat(Math.max(1, parseInt(n || '1', 10))))
+            // Cursor-position and cursor-down codes imply a new line — convert before stripping
+            .replace(/\x1B\[(?:\d+;)*\d*[Hf]/g, '\n') // \x1b[row;colH / \x1b[H → newline
+            .replace(/\x1B\[\d*[BE]/g, '\n') // cursor down / next line → newline
+            .replace(/\x1B\[\d*G/g, '\n') // cursor to column (start of line) → newline
+            .replace(ANSI_RE, '') // strip remaining escape sequences
+            .replace(/\r/g, '\n') // bare \r → newline
             .split('\n')
             .map((l) => l.trim())
             .filter((l) => l.length > 1);
@@ -65,7 +73,27 @@ function makeOutputBuffer() {
         const body = question ?? candidates[candidates.length - 1];
         return body ? body.slice(0, 200) : undefined;
     }
-    return { push, extractBody };
+    /** Extract numbered option lines from the buffer, e.g. ["1. Write code", "2. Review code"] */
+    function extractOptions() {
+        const seen = new Set();
+        const result = [];
+        for (const line of lines) {
+            // Match optional ❯ or > cursor prefix, then "N. Label text"
+            const match = /^[❯>]?\s*(\d+\.\s+\S.*)$/.exec(line);
+            if (!match)
+                continue;
+            const option = match[1].trim();
+            if (!seen.has(option)) {
+                seen.add(option);
+                result.push(option);
+            }
+        }
+        return result.slice(0, 10);
+    }
+    function clear() {
+        lines.length = 0;
+    }
+    return { push, extractBody, extractOptions, clear };
 }
 /**
  * Spawns the agent inside a PTY, bridges all I/O, and drives the session
@@ -93,6 +121,71 @@ async function runSession(options) {
     });
     state.transition('running');
     const buffer = makeOutputBuffer();
+    // ── Spurious-running suppression ─────────────────────────────────────────────
+    // After entering waiting_for_input/approval_required, ink often emits cursor-
+    // movement output that the adapter mis-detects as 'running'. Suppress those
+    // PTY-sourced 'running' transitions for a short window so the backend retains
+    // pendingAction long enough for Flutter to poll it.
+    let suppressRunningUntil = 0;
+    // ── Remote response polling ──────────────────────────────────────────────────
+    // When the agent is waiting for input and the user responds via the mobile app,
+    // we poll the backend and write the response directly into the PTY.
+    let responsePoller = null;
+    function startResponsePolling() {
+        if (responsePoller)
+            return;
+        responsePoller = setInterval(async () => {
+            if (state.status !== 'waiting_for_input' && state.status !== 'approval_required') {
+                stopResponsePolling();
+                return;
+            }
+            try {
+                const response = await (0, backendClient_1.getSessionResponse)(state.id);
+                if (response) {
+                    stopResponsePolling();
+                    suppressRunningUntil = 0; // Legitimate transition — lift suppression
+                    buffer.clear(); // Clear stale options so they don't bleed into the next question
+                    await writeToPty(response);
+                    state.transition('running');
+                }
+            }
+            catch {
+                // ignore — polling is best-effort
+            }
+        }, 2000);
+    }
+    function stopResponsePolling() {
+        if (responsePoller) {
+            clearInterval(responsePoller);
+            responsePoller = null;
+        }
+    }
+    async function writeToPty(response) {
+        const lower = response.toLowerCase().trim();
+        const approvalMap = {
+            approve: 'y',
+            allow: 'y',
+            yes: 'y',
+            deny: 'n',
+            no: 'n',
+        };
+        if (approvalMap[lower]) {
+            term.write(approvalMap[lower] + '\r');
+            return;
+        }
+        // Numbered option — navigate with arrow keys, one per tick, so ink-select-input
+        // processes each keypress before the next arrives.
+        const num = parseInt(response.trim(), 10);
+        if (!isNaN(num) && num >= 1) {
+            for (let i = 1; i < num; i++) {
+                term.write('\x1B[B');
+                await new Promise(resolve => setTimeout(resolve, 80));
+            }
+            term.write('\r');
+            return;
+        }
+        term.write(response + '\r');
+    }
     // ── Output: mirror PTY → stdout, inspect for state changes ─────────────────
     term.onData((data) => {
         process.stdout.write(data);
@@ -105,7 +198,31 @@ async function runSession(options) {
         buffer.push(data);
         const next = adapter.detectStatus(data, state.status);
         if (next !== null) {
-            state.transition(next, buffer.extractBody());
+            // Suppress PTY-sourced 'running' detections right after waiting_for_input
+            // to prevent the backend from clearing pendingAction before Flutter polls it.
+            if (next === 'running' && Date.now() < suppressRunningUntil) {
+                return;
+            }
+            const body = buffer.extractBody();
+            state.transition(next, body);
+            if (next === 'waiting_for_input' || next === 'approval_required') {
+                suppressRunningUntil = Date.now() + 5000; // Hold off spurious running for 5s
+                // Delay extraction so the full prompt has time to finish rendering into the buffer
+                setTimeout(() => {
+                    const options = buffer.extractOptions();
+                    const question = buffer.extractBody();
+                    void (0, backendClient_1.updateSessionStatus)(state.id, 'waiting_for_input', {
+                        question,
+                        // Fall back to approve/deny for approval prompts with no detectable numbered options
+                        options: options.length > 0 ? options : (next === 'approval_required' ? ['approve', 'deny'] : []),
+                    }).catch(() => { });
+                    startResponsePolling();
+                }, 500);
+            }
+            else {
+                suppressRunningUntil = 0;
+                stopResponsePolling();
+            }
         }
     });
     // ── Input: forward stdin → PTY ──────────────────────────────────────────────
@@ -116,6 +233,9 @@ async function runSession(options) {
     const onStdinData = (chunk) => {
         term.write(chunk.toString('binary'));
         if (state.status === 'waiting_for_input' || state.status === 'approval_required') {
+            stopResponsePolling();
+            suppressRunningUntil = 0; // Legitimate transition — lift suppression
+            buffer.clear();
             state.transition('running');
         }
     };
@@ -127,6 +247,7 @@ async function runSession(options) {
     };
     process.stdout.on('resize', onResize);
     function teardown() {
+        stopResponsePolling();
         process.stdin.removeListener('data', onStdinData);
         process.stdout.removeListener('resize', onResize);
         if (isTTY)

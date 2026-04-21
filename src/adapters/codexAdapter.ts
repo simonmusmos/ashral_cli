@@ -42,6 +42,10 @@ const RUNNING_PATTERNS = [
   /applying (changes|patch)/i,
 ];
 
+// Codex session IDs: OpenAI thread_ prefix or a plain UUID
+const CODEX_SESSION_RE = /[Ss]ession[:\s#]+([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|thread_\S+)/;
+const CODEX_UUID_RE = /\b([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\b/;
+
 const ERROR_PATTERNS = [
   /^error:/im,
   /fatal error/i,
@@ -78,6 +82,13 @@ export class CodexAdapter extends BaseAdapter {
     }
 
     return null;
+  }
+
+  extractAgentSessionId(raw: string): string | null {
+    const contextual = CODEX_SESSION_RE.exec(raw);
+    if (contextual) return contextual[1];
+    const any = CODEX_UUID_RE.exec(raw);
+    return any ? any[1] : null;
   }
 
   private matches(text: string, patterns: RegExp[]): boolean {

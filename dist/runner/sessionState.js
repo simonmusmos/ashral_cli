@@ -21,7 +21,7 @@ class SessionState {
         return this.session.status;
     }
     /** Transition to a new status and emit a status_changed event. No-ops on same status. */
-    transition(to, text) {
+    transition(to, text, options) {
         const from = this.session.status;
         if (from === to)
             return;
@@ -33,6 +33,7 @@ class SessionState {
             from,
             to,
             ...(text !== undefined && { text }),
+            ...(options !== undefined && options.length > 0 && { options }),
         };
         this.emit(event);
     }

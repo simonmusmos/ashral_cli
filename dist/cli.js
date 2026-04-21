@@ -22,20 +22,28 @@ function makeEventHandler(sessionId, sessionName) {
         switch (event.type) {
             case 'status_changed': {
                 if (event.to === 'waiting_for_input') {
+                    // updateSessionStatus (with debounced options) is called by runSession.ts
                     notifier.send({
                         title: label,
                         body: 'AI is waiting for your input.',
                         priority: 'high',
                         rawText: event.text,
                     });
+                    // Note: output is saved by the Anthropic proxy — don't append here or
+                    // the PTY-formatted text (with TUI emoji prefix) creates a duplicate chunk.
                 }
                 else if (event.to === 'approval_required') {
+                    // updateSessionStatus (with debounced options) is called by runSession.ts
                     notifier.send({
                         title: label,
                         body: 'AI is waiting for your approval.',
                         priority: 'urgent',
                         rawText: event.text,
                     });
+                    // Same as above — proxy handles the clean output chunk.
+                }
+                else if (event.to === 'running') {
+                    void (0, backendClient_1.updateSessionStatus)(sessionId, 'running');
                 }
                 else if (event.to === 'error') {
                     notifier.send({
@@ -94,7 +102,7 @@ async function runAgent(adapter, options, passthroughArgs) {
         process.exit(1);
     }
     finally {
-        await (0, backendClient_1.deleteSession)(sessionId);
+        await (0, backendClient_1.updateSessionStatus)(sessionId, 'terminated');
     }
 }
 // ── CLI definition ────────────────────────────────────────────────────────────

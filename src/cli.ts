@@ -6,7 +6,7 @@ import { CodexAdapter } from './adapters/codexAdapter';
 import { BackendNotifier } from './notifications/backendNotifier';
 import { loadEnvFile } from './config/loadEnv';
 import { showSessionQr } from './qr/showSessionQr';
-import { createSession, deleteSession, notifySession, OutdatedClientError } from './api/backendClient';
+import { createSession, deleteSession, notifySession, updateSessionStatus, getSession, OutdatedClientError } from './api/backendClient';
 import { randomUUID } from 'crypto'; // fallback when backend is unreachable
 import type { AshralEvent } from './types/events';
 
@@ -28,19 +28,26 @@ function makeEventHandler(
     switch (event.type) {
       case 'status_changed': {
         if (event.to === 'waiting_for_input') {
+          // updateSessionStatus (with debounced options) is called by runSession.ts
           notifier.send({
             title: label,
             body: 'AI is waiting for your input.',
             priority: 'high',
             rawText: event.text,
           });
+          // Note: output is saved by the Anthropic proxy — don't append here or
+          // the PTY-formatted text (with TUI emoji prefix) creates a duplicate chunk.
         } else if (event.to === 'approval_required') {
+          // updateSessionStatus (with debounced options) is called by runSession.ts
           notifier.send({
             title: label,
             body: 'AI is waiting for your approval.',
             priority: 'urgent',
             rawText: event.text,
           });
+          // Same as above — proxy handles the clean output chunk.
+        } else if (event.to === 'running') {
+          void updateSessionStatus(sessionId, 'running');
         } else if (event.to === 'error') {
           notifier.send({
             title: label,
@@ -105,7 +112,7 @@ async function runAgent(
     process.stderr.write(`[ashral] Fatal: ${message}\n`);
     process.exit(1);
   } finally {
-    await deleteSession(sessionId);
+    await updateSessionStatus(sessionId, 'terminated');
   }
 }
 
@@ -140,6 +147,35 @@ runCmd
   .allowExcessArguments()
   .action(async (options: { name?: string }, command: Command) => {
     await runAgent(new CodexAdapter(), options, command.args);
+  });
+
+// ── resume ────────────────────────────────────────────────────────────────────
+
+program
+  .command('resume')
+  .description('Resume a previous agent session by its Ashral session ID')
+  .argument('<sessionId>', 'Ashral session ID to resume')
+  .option('--name <name>', 'human-readable name for the new monitoring session')
+  .action(async (ashralSessionId: string, options: { name?: string }) => {
+    const session = await getSession(ashralSessionId);
+    if (!session) {
+      process.stderr.write(`\n${RED}[ashral] Session "${ashralSessionId}" not found.${RESET}\n\n`);
+      process.exit(1);
+    }
+    if (!session.agentSessionId) {
+      process.stderr.write(`\n${RED}[ashral] Session "${ashralSessionId}" has no saved agent session ID — it cannot be resumed.${RESET}\n\n`);
+      process.exit(1);
+    }
+
+    const adapter = session.agent === 'codex' ? new CodexAdapter() : new ClaudeAdapter();
+    try {
+      adapter.verify();
+    } catch (err) {
+      process.stderr.write(`\n${RED}[ashral] ${err instanceof Error ? err.message : err}${RESET}\n\n`);
+      process.exit(1);
+    }
+
+    await runAgent(adapter, { name: options.name ?? session.name }, ['--resume', session.agentSessionId]);
   });
 
 // ── notify:test ───────────────────────────────────────────────────────────────

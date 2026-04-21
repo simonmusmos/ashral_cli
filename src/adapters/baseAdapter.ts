@@ -53,4 +53,13 @@ export abstract class BaseAdapter {
    * This is called on every data chunk so keep it fast.
    */
   abstract detectStatus(output: string, currentStatus: SessionStatus): SessionStatus | null;
+
+  /**
+   * Scans accumulated startup PTY output for the agent's internal session ID.
+   * Called on a growing buffer of early output until a match is found.
+   * Returns null if the ID is not yet detectable in the given text.
+   */
+  extractAgentSessionId(_raw: string): string | null {
+    return null;
+  }
 }

@@ -1,4 +1,4 @@
-export type SessionStatus = 'starting' | 'running' | 'waiting_for_input' | 'approval_required' | 'error' | 'completed';
+export type SessionStatus = 'starting' | 'running' | 'waiting_for_input' | 'approval_required' | 'error' | 'completed' | 'terminated';
 export interface Session {
     id: string;
     name?: string;

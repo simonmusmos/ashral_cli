@@ -4,7 +4,8 @@ export type SessionStatus =
   | 'waiting_for_input'
   | 'approval_required'
   | 'error'
-  | 'completed';
+  | 'completed'
+  | 'terminated';
 
 export interface Session {
   id: string;

@@ -15,6 +15,8 @@ export interface StatusChangedEvent extends BaseEvent {
     to: SessionStatus;
     /** Cleaned text from the output chunk that triggered this transition */
     text?: string;
+    /** Numbered options Claude is presenting to the user, e.g. ["1. Yes", "2. No"] */
+    options?: string[];
 }
 export interface AgentPromptEvent extends BaseEvent {
     type: 'agent_prompt';
