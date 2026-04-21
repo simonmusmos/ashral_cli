@@ -45,6 +45,9 @@ const RUNNING_PATTERNS = [
     /reading|fetching|searching/i,
     /thinking\.\.\./i,
 ];
+// Claude's internal session ID — a standard UUID shown in the startup banner
+const SESSION_ID_RE = /[Ss]ession[:\s#]+([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})/;
+const UUID_RE = /\b([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\b/;
 // Something clearly went wrong
 const ERROR_PATTERNS = [
     /^error:/im,
@@ -86,6 +89,15 @@ class ClaudeAdapter extends baseAdapter_1.BaseAdapter {
             return 'running';
         }
         return null;
+    }
+    extractAgentSessionId(raw) {
+        // Primary: UUID adjacent to the word "session" (Claude Code startup banner)
+        const contextual = SESSION_ID_RE.exec(raw);
+        if (contextual)
+            return contextual[1];
+        // Fallback: first UUID in startup output (Claude Code shows it prominently)
+        const any = UUID_RE.exec(raw);
+        return any ? any[1] : null;
     }
     matches(text, patterns) {
         return patterns.some((p) => p.test(text));

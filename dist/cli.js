@@ -66,7 +66,7 @@ function makeEventHandler(sessionId, sessionName) {
     };
 }
 // ── Shared run logic ──────────────────────────────────────────────────────────
-async function runAgent(adapter, options, passthroughArgs) {
+async function runAgent(adapter, options, passthroughArgs, existingSessionId) {
     try {
         adapter.verify();
     }
@@ -74,17 +74,28 @@ async function runAgent(adapter, options, passthroughArgs) {
         process.stderr.write(`\n${RED}[ashral] ${err instanceof Error ? err.message : err}${RESET}\n\n`);
         process.exit(1);
     }
-    let sessionId = (0, crypto_1.randomUUID)(); // fallback if backend is unreachable
-    try {
-        sessionId = await (0, backendClient_1.createSession)({ agent: adapter.agentName, name: options.name ?? adapter.agentName });
-    }
-    catch (err) {
-        if (err instanceof backendClient_1.OutdatedClientError) {
-            process.stderr.write(`\n${RED}[ashral] ${err.message}${RESET}\n\n`);
-            process.exit(1);
+    let sessionId = existingSessionId ?? (0, crypto_1.randomUUID)();
+    if (existingSessionId) {
+        try {
+            await (0, backendClient_1.reactivateSession)(existingSessionId);
         }
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[ashral] Warning: could not register session with backend: ${msg}\n`);
+        catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[ashral] Warning: could not reactivate session with backend: ${msg}\n`);
+        }
+    }
+    else {
+        try {
+            sessionId = await (0, backendClient_1.createSession)({ agent: adapter.agentName, name: options.name ?? adapter.agentName });
+        }
+        catch (err) {
+            if (err instanceof backendClient_1.OutdatedClientError) {
+                process.stderr.write(`\n${RED}[ashral] ${err.message}${RESET}\n\n`);
+                process.exit(1);
+            }
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[ashral] Warning: could not register session with backend: ${msg}\n`);
+        }
     }
     (0, showSessionQr_1.showSessionQr)(sessionId, options.name);
     try {
@@ -130,6 +141,32 @@ runCmd
     .allowExcessArguments()
     .action(async (options, command) => {
     await runAgent(new codexAdapter_1.CodexAdapter(), options, command.args);
+});
+// ── resume ────────────────────────────────────────────────────────────────────
+program
+    .command('resume')
+    .description('Resume a previous agent session by its Ashral session ID')
+    .argument('<sessionId>', 'Ashral session ID to resume')
+    .option('--name <name>', 'human-readable name for the new monitoring session')
+    .action(async (ashralSessionId, options) => {
+    const session = await (0, backendClient_1.getSession)(ashralSessionId);
+    if (!session) {
+        process.stderr.write(`\n${RED}[ashral] Session "${ashralSessionId}" not found.${RESET}\n\n`);
+        process.exit(1);
+    }
+    if (!session.agentSessionId) {
+        process.stderr.write(`\n${RED}[ashral] Session "${ashralSessionId}" has no saved agent session ID — it cannot be resumed.${RESET}\n\n`);
+        process.exit(1);
+    }
+    const adapter = session.agent === 'codex' ? new codexAdapter_1.CodexAdapter() : new claudeAdapter_1.ClaudeAdapter();
+    try {
+        adapter.verify();
+    }
+    catch (err) {
+        process.stderr.write(`\n${RED}[ashral] ${err instanceof Error ? err.message : err}${RESET}\n\n`);
+        process.exit(1);
+    }
+    await runAgent(adapter, { name: options.name ?? session.name }, ['--resume', session.agentSessionId], ashralSessionId);
 });
 // ── notify:test ───────────────────────────────────────────────────────────────
 program

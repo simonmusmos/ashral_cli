@@ -124,6 +124,13 @@ export async function updateSessionStats(
   }).catch(() => {});
 }
 
+export async function reactivateSession(sessionId: string): Promise<void> {
+  await fetch(`${BACKEND_URL}/sessions/${sessionId}/reactivate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 export async function saveAgentSessionId(sessionId: string, agentSessionId: string): Promise<void> {
   await fetch(`${BACKEND_URL}/sessions/${sessionId}/agent-session`, {
     method: 'PATCH',

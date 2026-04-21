@@ -105,6 +105,12 @@ async function runSession(options) {
     const { columns = 80, rows = 24 } = process.stdout;
     const state = new sessionState_1.SessionState(adapter.agentName, name, cwd, onEvent, sessionId);
     const config = adapter.getCommand(passthroughArgs);
+    // If the caller passed --resume <id>, we already know the agent session ID
+    const resumeIdx = passthroughArgs.indexOf('--resume');
+    const preKnownAgentSessionId = resumeIdx >= 0 ? passthroughArgs[resumeIdx + 1] : null;
+    if (preKnownAgentSessionId) {
+        void (0, backendClient_1.saveAgentSessionId)(state.id, preKnownAgentSessionId).catch(() => { });
+    }
     // Start the transparent Anthropic proxy — Claude Code's API traffic flows
     // through it so we can capture clean assistant text without touching the PTY.
     const proxy = await (0, anthropicProxy_1.startAnthropicProxy)(state.id).catch(() => null);
@@ -121,6 +127,12 @@ async function runSession(options) {
     });
     state.transition('running');
     const buffer = makeOutputBuffer();
+    // ── Agent session ID detection ───────────────────────────────────────────────
+    // Accumulates early PTY output (up to 5000 stripped chars) and scans for the
+    // agent's internal session ID so we can persist it for later resumption.
+    let agentSessionIdSaved = !!preKnownAgentSessionId;
+    let startupBuf = '';
+    const STARTUP_SCAN_LIMIT = 5000;
     // ── Spurious-running suppression ─────────────────────────────────────────────
     // After entering waiting_for_input/approval_required, ink often emits cursor-
     // movement output that the adapter mis-detects as 'running'. Suppress those
@@ -196,6 +208,14 @@ async function runSession(options) {
             data,
         });
         buffer.push(data);
+        if (!agentSessionIdSaved && startupBuf.length < STARTUP_SCAN_LIMIT) {
+            startupBuf += data.replace(ANSI_RE, '');
+            const detected = adapter.extractAgentSessionId(startupBuf);
+            if (detected) {
+                agentSessionIdSaved = true;
+                void (0, backendClient_1.saveAgentSessionId)(state.id, detected).catch(() => { });
+            }
+        }
         const next = adapter.detectStatus(data, state.status);
         if (next !== null) {
             // Suppress PTY-sourced 'running' detections right after waiting_for_input

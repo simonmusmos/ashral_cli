@@ -6,7 +6,7 @@ import { CodexAdapter } from './adapters/codexAdapter';
 import { BackendNotifier } from './notifications/backendNotifier';
 import { loadEnvFile } from './config/loadEnv';
 import { showSessionQr } from './qr/showSessionQr';
-import { createSession, deleteSession, notifySession, updateSessionStatus, getSession, OutdatedClientError } from './api/backendClient';
+import { createSession, deleteSession, notifySession, updateSessionStatus, getSession, reactivateSession, OutdatedClientError } from './api/backendClient';
 import { randomUUID } from 'crypto'; // fallback when backend is unreachable
 import type { AshralEvent } from './types/events';
 
@@ -76,6 +76,7 @@ async function runAgent(
   adapter: InstanceType<typeof ClaudeAdapter> | InstanceType<typeof CodexAdapter>,
   options: { name?: string },
   passthroughArgs: string[],
+  existingSessionId?: string,
 ): Promise<void> {
   try {
     adapter.verify();
@@ -84,17 +85,26 @@ async function runAgent(
     process.exit(1);
   }
 
-  let sessionId: string = randomUUID(); // fallback if backend is unreachable
+  let sessionId: string = existingSessionId ?? randomUUID();
 
-  try {
-    sessionId = await createSession({ agent: adapter.agentName, name: options.name ?? adapter.agentName });
-  } catch (err) {
-    if (err instanceof OutdatedClientError) {
-      process.stderr.write(`\n${RED}[ashral] ${err.message}${RESET}\n\n`);
-      process.exit(1);
+  if (existingSessionId) {
+    try {
+      await reactivateSession(existingSessionId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[ashral] Warning: could not reactivate session with backend: ${msg}\n`);
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[ashral] Warning: could not register session with backend: ${msg}\n`);
+  } else {
+    try {
+      sessionId = await createSession({ agent: adapter.agentName, name: options.name ?? adapter.agentName });
+    } catch (err) {
+      if (err instanceof OutdatedClientError) {
+        process.stderr.write(`\n${RED}[ashral] ${err.message}${RESET}\n\n`);
+        process.exit(1);
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[ashral] Warning: could not register session with backend: ${msg}\n`);
+    }
   }
 
   showSessionQr(sessionId, options.name);
@@ -175,7 +185,7 @@ program
       process.exit(1);
     }
 
-    await runAgent(adapter, { name: options.name ?? session.name }, ['--resume', session.agentSessionId]);
+    await runAgent(adapter, { name: options.name ?? session.name }, ['--resume', session.agentSessionId], ashralSessionId);
   });
 
 // ── notify:test ───────────────────────────────────────────────────────────────

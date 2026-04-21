@@ -4,6 +4,7 @@ export declare class ClaudeAdapter extends BaseAdapter {
     readonly agentName = "claude";
     getCommand(passthroughArgs: string[]): AdapterCommand;
     detectStatus(raw: string, currentStatus: SessionStatus): SessionStatus | null;
+    extractAgentSessionId(raw: string): string | null;
     private matches;
 }
 //# sourceMappingURL=claudeAdapter.d.ts.map
