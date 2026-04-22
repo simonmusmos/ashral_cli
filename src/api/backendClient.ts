@@ -157,6 +157,19 @@ export async function getSession(sessionId: string): Promise<SessionSummary | nu
   }
 }
 
+/** Accepts either a full UUID or an 8-char short ID and returns the full session ID. */
+export async function resolveSessionId(input: string): Promise<string | null> {
+  if (input.length === 36) return input; // already a full UUID
+  try {
+    const res = await fetch(`${BACKEND_URL}/sessions/short/${input}`);
+    if (!res.ok) return null;
+    const data = await res.json() as { sessionId: string };
+    return data.sessionId;
+  } catch {
+    return null;
+  }
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   await fetch(`${BACKEND_URL}/sessions/${sessionId}`, {
     method: 'DELETE',

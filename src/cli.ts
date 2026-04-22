@@ -6,7 +6,7 @@ import { CodexAdapter } from './adapters/codexAdapter';
 import { BackendNotifier } from './notifications/backendNotifier';
 import { loadEnvFile } from './config/loadEnv';
 import { showSessionQr } from './qr/showSessionQr';
-import { createSession, deleteSession, notifySession, updateSessionStatus, getSession, reactivateSession, OutdatedClientError } from './api/backendClient';
+import { createSession, deleteSession, notifySession, updateSessionStatus, getSession, reactivateSession, resolveSessionId, OutdatedClientError } from './api/backendClient';
 import { randomUUID } from 'crypto'; // fallback when backend is unreachable
 import type { AshralEvent } from './types/events';
 
@@ -166,10 +166,15 @@ program
   .description('Resume a previous agent session by its Ashral session ID')
   .argument('<sessionId>', 'Ashral session ID to resume')
   .option('--name <name>', 'human-readable name for the new monitoring session')
-  .action(async (ashralSessionId: string, options: { name?: string }) => {
+  .action(async (input: string, options: { name?: string }) => {
+    const ashralSessionId = await resolveSessionId(input);
+    if (!ashralSessionId) {
+      process.stderr.write(`\n${RED}[ashral] Session "${input}" not found.${RESET}\n\n`);
+      process.exit(1);
+    }
     const session = await getSession(ashralSessionId);
     if (!session) {
-      process.stderr.write(`\n${RED}[ashral] Session "${ashralSessionId}" not found.${RESET}\n\n`);
+      process.stderr.write(`\n${RED}[ashral] Session "${input}" not found.${RESET}\n\n`);
       process.exit(1);
     }
     if (!session.agentSessionId) {

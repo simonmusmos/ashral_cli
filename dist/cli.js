@@ -148,10 +148,15 @@ program
     .description('Resume a previous agent session by its Ashral session ID')
     .argument('<sessionId>', 'Ashral session ID to resume')
     .option('--name <name>', 'human-readable name for the new monitoring session')
-    .action(async (ashralSessionId, options) => {
+    .action(async (input, options) => {
+    const ashralSessionId = await (0, backendClient_1.resolveSessionId)(input);
+    if (!ashralSessionId) {
+        process.stderr.write(`\n${RED}[ashral] Session "${input}" not found.${RESET}\n\n`);
+        process.exit(1);
+    }
     const session = await (0, backendClient_1.getSession)(ashralSessionId);
     if (!session) {
-        process.stderr.write(`\n${RED}[ashral] Session "${ashralSessionId}" not found.${RESET}\n\n`);
+        process.stderr.write(`\n${RED}[ashral] Session "${input}" not found.${RESET}\n\n`);
         process.exit(1);
     }
     if (!session.agentSessionId) {
