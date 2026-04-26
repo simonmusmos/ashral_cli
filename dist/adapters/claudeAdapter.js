@@ -61,6 +61,7 @@ class ClaudeAdapter extends baseAdapter_1.BaseAdapter {
     constructor() {
         super(...arguments);
         this.agentName = 'claude';
+        this.usesAnthropicProxy = true;
     }
     getCommand(passthroughArgs) {
         // On Windows, npm CLIs are installed as .cmd wrappers — node-pty needs the

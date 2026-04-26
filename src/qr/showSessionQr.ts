@@ -55,10 +55,12 @@ function renderTerminalQr(url: string): void {
 }
 
 export function showSessionQr(sessionId: string, sessionName?: string): void {
-  const url   = `${DEEP_LINK_BASE}/${sessionId}`;
-  const label = sessionName ? `"${sessionName}"` : sessionId;
+  const url     = `${DEEP_LINK_BASE}/${sessionId}`;
+  const shortId = sessionId.replace(/-/g, '').slice(0, 8);
+  const label   = sessionName ? `"${sessionName}"` : sessionId;
 
   process.stderr.write(`\n  Scan with Ashral app → ${label}\n\n`);
   renderTerminalQr(url);
-  process.stderr.write(`\n  ${url}\n\n`);
+  process.stderr.write(`\n  ${url}\n`);
+  process.stderr.write(`  Code: ${shortId}\n\n`);
 }

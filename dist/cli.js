@@ -97,6 +97,18 @@ async function runAgent(adapter, options, passthroughArgs, existingSessionId) {
             process.stderr.write(`[ashral] Warning: could not register session with backend: ${msg}\n`);
         }
     }
+    // Register an exit hook so the resume hint is always printed — even if
+    // process.exit() is called — since process.on('exit') runs synchronously.
+    const shortId = sessionId.replace(/-/g, '').slice(0, 8);
+    const resumeHint = `\n  [ashral] Session ended. Resume with:\n  ashral resume ${shortId}\n`;
+    let hintPrinted = false;
+    const printResumeHint = () => {
+        if (!hintPrinted) {
+            hintPrinted = true;
+            process.stderr.write(resumeHint);
+        }
+    };
+    process.on('exit', printResumeHint);
     (0, showSessionQr_1.showSessionQr)(sessionId, options.name);
     try {
         await (0, runSession_1.runSession)({
@@ -110,9 +122,10 @@ async function runAgent(adapter, options, passthroughArgs, existingSessionId) {
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[ashral] Fatal: ${message}\n`);
-        process.exit(1);
     }
     finally {
+        printResumeHint();
+        process.off('exit', printResumeHint);
         await (0, backendClient_1.updateSessionStatus)(sessionId, 'terminated');
     }
 }

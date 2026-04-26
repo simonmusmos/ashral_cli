@@ -3,8 +3,20 @@ import type { SessionStatus } from '../types/session';
 
 const ANSI_RE = /\x1B\[[0-9;]*[A-Za-z]|\x1B[@-_][0-?]*[ -/]*[@-~]/g;
 
-function stripAnsi(raw: string): string {
-  return raw.replace(ANSI_RE, '');
+/**
+ * Full TUI-aware cleaning: converts cursor-movement codes to newlines so
+ * pattern matching works on ink-rendered output. Plain stripAnsi() leaves
+ * \x1b[H, \x1b[2J etc. in place, which means the ">" prompt never appears
+ * at the start of a line and WAITING_PATTERNS never fire.
+ */
+function cleanForDetection(raw: string): string {
+  return raw
+    .replace(/\x1B\[(\d*)C/g, (_, n) => ' '.repeat(Math.max(1, parseInt(n || '1', 10))))
+    .replace(/\x1B\[(?:\d+;)*\d*[Hf]/g, '\n')
+    .replace(/\x1B\[\d*[BE]/g, '\n')
+    .replace(/\x1B\[\d*G/g, '\n')
+    .replace(ANSI_RE, '')
+    .replace(/\r/g, '\n');
 }
 
 // Codex requires the user to approve shell commands before execution
@@ -58,6 +70,7 @@ const ERROR_PATTERNS = [
 
 export class CodexAdapter extends BaseAdapter {
   readonly agentName = 'codex';
+  readonly usesOpenAIProxy = true;
 
   getCommand(passthroughArgs: string[]): AdapterCommand {
     // On Windows, npm CLIs are installed as .cmd wrappers
@@ -68,7 +81,7 @@ export class CodexAdapter extends BaseAdapter {
   detectStatus(raw: string, currentStatus: SessionStatus): SessionStatus | null {
     if (currentStatus === 'completed') return null;
 
-    const text = stripAnsi(raw);
+    const text = cleanForDetection(raw);
 
     if (this.matches(text, APPROVAL_PATTERNS)) return 'approval_required';
     if (this.matches(text, ERROR_PATTERNS)) return 'error';

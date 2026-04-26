@@ -107,6 +107,19 @@ async function runAgent(
     }
   }
 
+  // Register an exit hook so the resume hint is always printed — even if
+  // process.exit() is called — since process.on('exit') runs synchronously.
+  const shortId = sessionId.replace(/-/g, '').slice(0, 8);
+  const resumeHint = `\n  [ashral] Session ended. Resume with:\n  ashral resume ${shortId}\n`;
+  let hintPrinted = false;
+  const printResumeHint = () => {
+    if (!hintPrinted) {
+      hintPrinted = true;
+      process.stderr.write(resumeHint);
+    }
+  };
+  process.on('exit', printResumeHint);
+
   showSessionQr(sessionId, options.name);
 
   try {
@@ -120,8 +133,9 @@ async function runAgent(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[ashral] Fatal: ${message}\n`);
-    process.exit(1);
   } finally {
+    printResumeHint();
+    process.off('exit', printResumeHint);
     await updateSessionStatus(sessionId, 'terminated');
   }
 }

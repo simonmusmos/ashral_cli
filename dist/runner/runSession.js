@@ -35,9 +35,15 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runSession = runSession;
 const pty = __importStar(require("node-pty"));
+const fs = __importStar(require("fs"));
 const sessionState_1 = require("./sessionState");
 const anthropicProxy_1 = require("../proxy/anthropicProxy");
+const openaiProxy_1 = require("../proxy/openaiProxy");
 const backendClient_1 = require("../api/backendClient");
+const DEBUG_LOG = '/tmp/ashral-debug.log';
+function dbg(msg) {
+    fs.appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${msg}\n`);
+}
 const ANSI_RE = /\x1B\[[0-9;]*[A-Za-z]|\x1B[@-_][0-?]*[ -/]*[@-~]/g;
 /**
  * Rolling buffer of the last N clean lines of PTY output.
@@ -96,11 +102,54 @@ function makeOutputBuffer() {
     return { push, extractBody, extractOptions, clear };
 }
 /**
+ * Strips ANSI/TUI escape codes from raw PTY output and deduplicates
+ * consecutive identical lines. Used to save Codex output to the backend
+ * when the Anthropic proxy is not active.
+ */
+// Lines that are purely TUI chrome: box-drawing, arrows, navigation cursors
+const TUI_CHROME_RE = /^[╭╰╮╯│─╴╷╸╹❯›>\s□↓↑←→·•◆◇▶▷⏎⏏✓✗●○◉]+$/u;
+// Lines that look like a terminal status bar: filesystem path + model name
+const STATUS_BAR_RE = /^[~\/][^\s]*\s+(?:gpt|claude|o1|o3|gemini|mistral|llama|codex|default|fast|slow)/i;
+function stripPtyForStorage(raw) {
+    const text = raw
+        // OSC sequences: \x1b]...\x07 or \x1b]...\x1b\\ — not caught by ANSI_RE
+        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+        // DEC private mode and other unhandled sequences
+        .replace(/\x1b\[[\x3c-\x3f][\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
+        .replace(/\x1B\[(\d*)C/g, (_, n) => ' '.repeat(Math.max(1, parseInt(n || '1', 10))))
+        .replace(/\x1B\[(?:\d+;)*\d*[Hf]/g, '\n')
+        .replace(/\x1B\[\d*[BE]/g, '\n')
+        .replace(/\x1B\[\d*G/g, '\n')
+        .replace(ANSI_RE, '')
+        // Strip any remaining bare ESC bytes
+        .replace(/\x1b[^\x1b]?/g, '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n');
+    const deduped = [];
+    for (const line of text
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 1)
+        .filter((l) => !TUI_CHROME_RE.test(l))
+        .filter((l) => !STATUS_BAR_RE.test(l))) {
+        if (deduped.length === 0 || deduped[deduped.length - 1] !== line)
+            deduped.push(line);
+    }
+    return deduped.join('\n').trim();
+}
+const PTY_CHUNK_MAX = 14000;
+async function saveChunked(sessionId, text, stream) {
+    for (let i = 0; i < text.length; i += PTY_CHUNK_MAX) {
+        await (0, backendClient_1.appendSessionOutput)(sessionId, text.slice(i, i + PTY_CHUNK_MAX), stream).catch(() => { });
+    }
+}
+/**
  * Spawns the agent inside a PTY, bridges all I/O, and drives the session
  * state machine. Resolves when the agent process exits.
  */
 async function runSession(options) {
     const { adapter, name, sessionId, passthroughArgs, onEvent } = options;
+    dbg(`runSession start adapter=${adapter.agentName}`);
     const cwd = process.cwd();
     const { columns = 80, rows = 24 } = process.stdout;
     const state = new sessionState_1.SessionState(adapter.agentName, name, cwd, onEvent, sessionId);
@@ -111,13 +160,35 @@ async function runSession(options) {
     if (preKnownAgentSessionId) {
         void (0, backendClient_1.saveAgentSessionId)(state.id, preKnownAgentSessionId).catch(() => { });
     }
-    // Start the transparent Anthropic proxy — Claude Code's API traffic flows
-    // through it so we can capture clean assistant text without touching the PTY.
-    const proxy = await (0, anthropicProxy_1.startAnthropicProxy)(state.id).catch(() => null);
+    // Start whichever API proxy this adapter needs.
+    // Each proxy intercepts the agent's AI traffic and saves clean text to the backend,
+    // which is far more reliable than scraping raw PTY output.
+    const anthropicProxy = adapter.usesAnthropicProxy
+        ? await (0, anthropicProxy_1.startAnthropicProxy)(state.id).catch(() => null)
+        : null;
+    const openaiProxy = adapter.usesOpenAIProxy
+        ? await (0, openaiProxy_1.startOpenAIProxy)(state.id).catch(() => null)
+        : null;
+    // For Codex (Rust binary), OPENAI_BASE_URL env var is ignored. Patch the real
+    // ~/.codex/config.toml to inject openai_base_url pointing at our proxy. The
+    // restore function undoes the patch after Codex exits.
+    const codexRestoreConfig = openaiProxy
+        ? await (0, openaiProxy_1.patchCodexConfig)(openaiProxy.port).catch(() => null)
+        : null;
+    dbg(`proxies anthropic=${anthropicProxy?.port ?? 'off'} openai=${openaiProxy?.port ?? 'off'} codexConfig=${codexRestoreConfig ? 'patched' : 'off'}`);
+    // proxyActive: true when an API-level proxy is handling saves for this adapter.
+    // When false, fall back to accumulating raw PTY output and stripping TUI escapes.
+    const proxyActive = (anthropicProxy !== null && adapter.usesAnthropicProxy) ||
+        (openaiProxy !== null && adapter.usesOpenAIProxy);
+    let ptyOutputAccum = '';
+    // Don't save the pre-conversation startup flush — it's pure TUI chrome.
+    // Flipped to true the first time the user sends a message.
+    let hasUserSentMessage = false;
     const baseEnv = { ...process.env, ...(config.env ?? {}) };
-    const env = proxy
-        ? { ...baseEnv, ANTHROPIC_BASE_URL: `http://127.0.0.1:${proxy.port}` }
-        : baseEnv;
+    const env = {
+        ...baseEnv,
+        ...(anthropicProxy ? { ANTHROPIC_BASE_URL: `http://127.0.0.1:${anthropicProxy.port}` } : {}),
+    };
     const term = pty.spawn(config.command, config.args, {
         name: 'xterm-color',
         cols: columns,
@@ -140,25 +211,28 @@ async function runSession(options) {
     // pendingAction long enough for Flutter to poll it.
     let suppressRunningUntil = 0;
     // ── Remote response polling ──────────────────────────────────────────────────
-    // When the agent is waiting for input and the user responds via the mobile app,
-    // we poll the backend and write the response directly into the PTY.
+    // Always-on poller: handles pending action responses (waiting_for_input /
+    // approval_required) AND proactive messages sent from the mobile app while the
+    // agent is running. Started once at session launch, stopped only on teardown.
     let responsePoller = null;
+    startResponsePolling();
     function startResponsePolling() {
         if (responsePoller)
             return;
         responsePoller = setInterval(async () => {
-            if (state.status !== 'waiting_for_input' && state.status !== 'approval_required') {
-                stopResponsePolling();
-                return;
-            }
             try {
                 const response = await (0, backendClient_1.getSessionResponse)(state.id);
-                if (response) {
-                    stopResponsePolling();
-                    suppressRunningUntil = 0; // Legitimate transition — lift suppression
-                    buffer.clear(); // Clear stale options so they don't bleed into the next question
+                if (!response)
+                    return;
+                if (state.status === 'waiting_for_input' || state.status === 'approval_required') {
+                    suppressRunningUntil = 0;
+                    buffer.clear();
                     await writeToPty(response);
                     state.transition('running');
+                }
+                else if (state.status === 'running') {
+                    // Proactive message sent from mobile while agent is working
+                    await writeToPty(response);
                 }
             }
             catch {
@@ -181,6 +255,16 @@ async function runSession(options) {
             deny: 'n',
             no: 'n',
         };
+        // For non-proxy adapters: save the user message and reset the output
+        // accumulator so the next AI response chunk starts clean.
+        dbg(`writeToPty proxyActive=${proxyActive} response="${response.slice(0, 40)}"`);
+        if (!proxyActive) {
+            hasUserSentMessage = true;
+            (0, backendClient_1.appendSessionOutput)(state.id, response, 'stderr')
+                .then(() => dbg('saved user msg ok'))
+                .catch((e) => dbg(`save user msg FAILED: ${e}`));
+            ptyOutputAccum = '';
+        }
         if (approvalMap[lower]) {
             term.write(approvalMap[lower] + '\r');
             return;
@@ -196,7 +280,13 @@ async function runSession(options) {
             term.write('\r');
             return;
         }
-        term.write(response + '\r');
+        // Write text first, then wait a tick before sending Enter.
+        // ink-based CLIs (e.g. Codex) batch React state updates — if the CR
+        // arrives in the same chunk as the text, the onSubmit handler fires
+        // before the text state is committed, producing a blank submit.
+        term.write(response);
+        await new Promise(resolve => setTimeout(resolve, 80));
+        term.write('\r');
     }
     // ── Output: mirror PTY → stdout, inspect for state changes ─────────────────
     term.onData((data) => {
@@ -208,16 +298,24 @@ async function runSession(options) {
             data,
         });
         buffer.push(data);
+        // Accumulate raw PTY output for adapters without an active Anthropic proxy
+        if (!proxyActive)
+            ptyOutputAccum += data;
         if (!agentSessionIdSaved && startupBuf.length < STARTUP_SCAN_LIMIT) {
             startupBuf += data.replace(ANSI_RE, '');
             const detected = adapter.extractAgentSessionId(startupBuf);
             if (detected) {
                 agentSessionIdSaved = true;
+                dbg(`agentSessionId detected: ${detected}`);
                 void (0, backendClient_1.saveAgentSessionId)(state.id, detected).catch(() => { });
+            }
+            else if (startupBuf.length >= STARTUP_SCAN_LIMIT) {
+                dbg(`agentSessionId NOT found after ${STARTUP_SCAN_LIMIT} chars. buf preview: "${startupBuf.slice(0, 200).replace(/\n/g, '↵')}"`);
             }
         }
         const next = adapter.detectStatus(data, state.status);
         if (next !== null) {
+            dbg(`detectStatus: ${state.status} → ${next}`);
             // Suppress PTY-sourced 'running' detections right after waiting_for_input
             // to prevent the backend from clearing pendingAction before Flutter polls it.
             if (next === 'running' && Date.now() < suppressRunningUntil) {
@@ -227,6 +325,22 @@ async function runSession(options) {
             state.transition(next, body);
             if (next === 'waiting_for_input' || next === 'approval_required') {
                 suppressRunningUntil = Date.now() + 5000; // Hold off spurious running for 5s
+                // For non-proxy adapters: flush the accumulated PTY output as AI response.
+                // Skip the very first flush (startup screen before any user interaction).
+                dbg(`status→waiting proxyActive=${proxyActive} hasUser=${hasUserSentMessage} accumLen=${ptyOutputAccum.length}`);
+                if (!proxyActive && hasUserSentMessage && ptyOutputAccum) {
+                    const cleaned = stripPtyForStorage(ptyOutputAccum);
+                    ptyOutputAccum = '';
+                    dbg(`stripped cleanedLen=${cleaned.length} preview="${cleaned.slice(0, 100).replace(/\n/g, '↵')}"`);
+                    if (cleaned) {
+                        saveChunked(state.id, cleaned, 'stdout')
+                            .then(() => dbg('saveChunked ok'))
+                            .catch((e) => dbg(`saveChunked FAILED: ${e}`));
+                    }
+                    else {
+                        dbg('cleaned is empty — nothing saved');
+                    }
+                }
                 // Delay extraction so the full prompt has time to finish rendering into the buffer
                 setTimeout(() => {
                     const options = buffer.extractOptions();
@@ -241,7 +355,7 @@ async function runSession(options) {
             }
             else {
                 suppressRunningUntil = 0;
-                stopResponsePolling();
+                // Poller stays active for proactive messages from mobile
             }
         }
     });
@@ -250,12 +364,38 @@ async function runSession(options) {
     if (isTTY)
         process.stdin.setRawMode(true);
     process.stdin.resume();
+    // Returns true only for chunks that represent deliberate user keystrokes.
+    // Terminal emulators send focus/blur events (\x1b[I / \x1b[O) and other
+    // control sequences as stdin data — those must not be treated as user input
+    // or they stop the response poller and strand mobile sessions.
+    function isRealUserInput(chunk) {
+        for (const byte of chunk) {
+            if (byte >= 0x20 && byte <= 0x7e)
+                return true; // printable ASCII
+            if (byte === 0x0d || byte === 0x0a)
+                return true; // Enter
+            if (byte === 0x7f || byte === 0x08)
+                return true; // Backspace/DEL
+            if (byte === 0x03 || byte === 0x04)
+                return true; // Ctrl+C / Ctrl+D
+        }
+        return false;
+    }
     const onStdinData = (chunk) => {
         term.write(chunk.toString('binary'));
-        if (state.status === 'waiting_for_input' || state.status === 'approval_required') {
+        if (isRealUserInput(chunk) &&
+            (state.status === 'waiting_for_input' || state.status === 'approval_required')) {
             stopResponsePolling();
             suppressRunningUntil = 0; // Legitimate transition — lift suppression
             buffer.clear();
+            // Mirror writeToPty: mark that a real message was sent so the next AI
+            // response gets saved, and reset the accumulator so only the new response
+            // is captured (not the full TUI history from before this message).
+            if (!proxyActive) {
+                hasUserSentMessage = true;
+                ptyOutputAccum = '';
+                dbg('stdin: hasUserSentMessage=true accumulator reset');
+            }
             state.transition('running');
         }
     };
@@ -277,7 +417,10 @@ async function runSession(options) {
     return new Promise((resolve) => {
         term.onExit(async ({ exitCode, signal }) => {
             teardown();
-            await proxy?.stop();
+            await anthropicProxy?.stop();
+            await openaiProxy?.stop();
+            if (codexRestoreConfig)
+                await codexRestoreConfig();
             if (signal && exitCode !== 0) {
                 onEvent({
                     type: 'error',

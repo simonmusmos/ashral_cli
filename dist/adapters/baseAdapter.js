@@ -12,6 +12,19 @@ const child_process_1 = require("child_process");
  * Keep all agent-specific knowledge inside its adapter. The runner stays generic.
  */
 class BaseAdapter {
+    constructor() {
+        /**
+         * Whether this adapter routes its AI API traffic through the local Anthropic
+         * proxy. When true, the proxy captures clean text for storage. When false,
+         * the runner saves output directly from the PTY.
+         */
+        this.usesAnthropicProxy = false;
+        /**
+         * Whether this adapter routes its AI API traffic through the local OpenAI
+         * proxy. When true, the proxy captures clean text for storage.
+         */
+        this.usesOpenAIProxy = false;
+    }
     /**
      * Checks whether the agent CLI is installed and on PATH.
      * Throws a descriptive error if not found.

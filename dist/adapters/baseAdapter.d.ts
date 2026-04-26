@@ -20,6 +20,17 @@ export declare abstract class BaseAdapter {
     /** Human-readable agent identifier, e.g. "claude" */
     abstract readonly agentName: string;
     /**
+     * Whether this adapter routes its AI API traffic through the local Anthropic
+     * proxy. When true, the proxy captures clean text for storage. When false,
+     * the runner saves output directly from the PTY.
+     */
+    readonly usesAnthropicProxy: boolean;
+    /**
+     * Whether this adapter routes its AI API traffic through the local OpenAI
+     * proxy. When true, the proxy captures clean text for storage.
+     */
+    readonly usesOpenAIProxy: boolean;
+    /**
      * Checks whether the agent CLI is installed and on PATH.
      * Throws a descriptive error if not found.
      */

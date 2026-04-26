@@ -66,6 +66,7 @@ const ERROR_PATTERNS = [
 
 export class ClaudeAdapter extends BaseAdapter {
   readonly agentName = 'claude';
+  readonly usesAnthropicProxy = true;
 
   getCommand(passthroughArgs: string[]): AdapterCommand {
     // On Windows, npm CLIs are installed as .cmd wrappers — node-pty needs the
