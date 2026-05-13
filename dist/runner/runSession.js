@@ -341,7 +341,8 @@ async function runSession(options) {
                         dbg('cleaned is empty — nothing saved');
                     }
                 }
-                // Delay extraction so the full prompt has time to finish rendering into the buffer
+                // Delay extraction so the full prompt has time to finish rendering into the buffer.
+                // ink.js renders approval dialogs incrementally — 1200ms is enough for even slow paints.
                 setTimeout(() => {
                     const options = buffer.extractOptions();
                     const question = buffer.extractBody();
@@ -351,7 +352,7 @@ async function runSession(options) {
                         options: options.length > 0 ? options : (next === 'approval_required' ? ['approve', 'deny'] : []),
                     }).catch(() => { });
                     startResponsePolling();
-                }, 500);
+                }, 1200);
             }
             else {
                 suppressRunningUntil = 0;

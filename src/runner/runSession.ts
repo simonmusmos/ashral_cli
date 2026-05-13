@@ -353,7 +353,8 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
           }
         }
 
-        // Delay extraction so the full prompt has time to finish rendering into the buffer
+        // Delay extraction so the full prompt has time to finish rendering into the buffer.
+        // ink.js renders approval dialogs incrementally — 1200ms is enough for even slow paints.
         setTimeout(() => {
           const options = buffer.extractOptions();
           const question = buffer.extractBody();
@@ -363,7 +364,7 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
             options: options.length > 0 ? options : (next === 'approval_required' ? ['approve', 'deny'] : []),
           }).catch(() => {});
           startResponsePolling();
-        }, 500);
+        }, 1200);
       } else {
         suppressRunningUntil = 0;
         // Poller stays active for proactive messages from mobile

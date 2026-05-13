@@ -1,6 +1,11 @@
 import * as http from 'http';
 import * as https from 'https';
-import { appendSessionOutput, updateSessionStats } from '../api/backendClient';
+import * as fs from 'fs';
+import { appendSessionOutput, updateSessionStats, appendSessionDiff, type FileDiffPayload } from '../api/backendClient';
+
+function dbg(msg: string): void {
+  fs.appendFileSync('/tmp/ashral-debug.log', `${new Date().toISOString()} [proxy] ${msg}\n`);
+}
 
 const ANTHROPIC_HOST = 'api.anthropic.com';
 const CHUNK_MAX_CHARS = 14_000;
@@ -107,6 +112,89 @@ function extractToolFilePaths(body: Buffer): string[] {
   } catch { return []; }
 }
 
+const DIFF_CONTENT_LIMIT = 3000;
+
+function extractFileDiffs(body: Buffer): FileDiffPayload[] {
+  try {
+    const json = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
+    const messages = json.messages;
+    if (!Array.isArray(messages)) return [];
+
+    const diffs: FileDiffPayload[] = [];
+    for (const msg of messages as Array<Record<string, unknown>>) {
+      if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+      for (const block of msg.content as Array<Record<string, unknown>>) {
+        if (block.type !== 'tool_use') continue;
+        const name = (block.name as string | undefined) ?? '';
+        const id = block.id as string | undefined;
+        if (!id) continue;
+        const input = (block.input ?? {}) as Record<string, unknown>;
+        const cmd = input.command as string | undefined;
+
+        // Claude Code's built-in Edit tool: { file_path, old_string, new_string }
+        if (name === 'Edit') {
+          const path = (input.file_path ?? input.path) as string | undefined;
+          const oldStr = (input.old_string ?? input.old_str) as string | undefined;
+          const newStr = (input.new_string ?? input.new_str) as string | undefined;
+          if (path && newStr !== undefined) {
+            diffs.push({
+              toolUseId: id,
+              path,
+              type: 'str_replace',
+              ...(typeof oldStr === 'string' && { oldStr: oldStr.slice(0, DIFF_CONTENT_LIMIT) }),
+              newStr: newStr.slice(0, DIFF_CONTENT_LIMIT),
+            });
+          }
+        // Claude Code's built-in Write tool: { file_path, content }
+        } else if (name === 'Write') {
+          const path = (input.file_path ?? input.path) as string | undefined;
+          const content = (input.content ?? input.file_text) as string | undefined;
+          if (path && content !== undefined) {
+            diffs.push({
+              toolUseId: id,
+              path,
+              type: 'write_file',
+              newStr: content.slice(0, DIFF_CONTENT_LIMIT),
+            });
+          }
+        // Legacy str_replace_based_edit_tool format
+        } else if (name.toLowerCase().includes('str_replace') || name === 'edit_file') {
+          const isCreate = (input.command as string | undefined) === 'create' || (input.command as string | undefined) === 'write';
+          const path = (input.path ?? input.file_path) as string | undefined;
+          if (isCreate) {
+            const content = (input.file_text ?? input.new_str ?? input.content) as string | undefined;
+            if (path && content !== undefined) {
+              diffs.push({ toolUseId: id, path, type: 'create_file', newStr: content.slice(0, DIFF_CONTENT_LIMIT) });
+            }
+          } else {
+            const newStr = (input.new_str ?? input.new_string) as string | undefined;
+            if (path && newStr !== undefined) {
+              diffs.push({
+                toolUseId: id, path, type: 'str_replace',
+                ...(typeof (input.old_str ?? input.old_string) === 'string' && {
+                  oldStr: ((input.old_str ?? input.old_string) as string).slice(0, DIFF_CONTENT_LIMIT),
+                }),
+                newStr: newStr.slice(0, DIFF_CONTENT_LIMIT),
+              });
+            }
+          }
+        } else if (name === 'write_file' || name === 'create_file') {
+          const path = (input.file_path ?? input.path) as string | undefined;
+          const content = (input.content ?? input.file_text) as string | undefined;
+          if (path && content !== undefined) {
+            diffs.push({
+              toolUseId: id, path,
+              type: name === 'create_file' ? 'create_file' : 'write_file',
+              newStr: content.slice(0, DIFF_CONTENT_LIMIT),
+            });
+          }
+        }
+      }
+    }
+    return diffs;
+  } catch { return []; }
+}
+
 /**
  * Claude Code instructs Claude to append JSON metadata and <system-reminder> blocks
  * after its visible response. Strip everything from the first such block onward.
@@ -134,7 +222,13 @@ function stripInternalMetadata(text: string): string {
     return trimmed.slice(0, tagIdx).trim();
   }
 
-  return trimmed;
+  // Strip Claude Code's ✳ annotation lines (recap, timing, etc.) — these are
+  // appended by Claude Code's CLI, not part of the actual AI response.
+  const lines = trimmed.split('\n');
+  const firstAnnotation = lines.findIndex(l => l.trimStart().startsWith('✳'));
+  const cleaned = (firstAnnotation === -1 ? lines : lines.slice(0, firstAnnotation))
+    .join('\n').trim();
+  return cleaned;
 }
 
 async function save(sessionId: string, text: string, stream: 'stdout' | 'stderr'): Promise<void> {
@@ -143,6 +237,20 @@ async function save(sessionId: string, text: string, stream: 'stdout' | 'stderr'
   for (let i = 0; i < trimmed.length; i += CHUNK_MAX_CHARS) {
     await appendSessionOutput(sessionId, trimmed.slice(i, i + CHUNK_MAX_CHARS), stream).catch(() => {});
   }
+}
+
+// Returns true for any text block that is Claude Code system injection, not real user input.
+function isInjectedBlock(t: string): boolean {
+  return (
+    t.startsWith('<') ||
+    t.startsWith('[') ||
+    t.startsWith('{') ||
+    t.includes('[SUGGESTION MODE:') ||
+    t.startsWith('Base directory for this skill:') ||
+    t.startsWith('### Skill:') ||
+    t.startsWith('The user stepped away') ||
+    t.includes('Prior knowledge:')
+  );
 }
 
 /**
@@ -165,8 +273,8 @@ function extractUserMessage(body: Buffer): string | null {
       if (typeof msg.content === 'string') {
         const text = msg.content.trim();
         if (!text) continue;
-        // Skip plain-string JSON blobs Claude Code injects as metadata
-        try { JSON.parse(text); continue; } catch { /* not JSON — it's real user text */ }
+        try { JSON.parse(text); continue; } catch { /* not JSON */ }
+        if (isInjectedBlock(text)) continue;
         return text;
       }
 
@@ -178,17 +286,7 @@ function extractUserMessage(body: Buffer): string | null {
           // and Claude Code system instructions (compact-return prompt etc.).
           // Real user messages are conversational and short; anything > 4000 chars is
           // injected system/skill content (skill guides are tens of thousands of chars).
-          .filter((t) =>
-            t.length > 0 &&
-            t.length < 4000 &&
-            !t.startsWith('<') &&
-            !t.startsWith('[') &&
-            !t.startsWith('{') &&
-            !t.startsWith('Base directory for this skill:') &&
-            !t.startsWith('### Skill:') &&
-            !t.startsWith('The user stepped away') &&
-            !t.includes('Prior knowledge:'),
-          );
+          .filter((t) => t.length > 0 && t.length < 4000 && !isInjectedBlock(t));
 
         // The actual user text is always the last block
         const last = blocks[blocks.length - 1];
@@ -208,6 +306,7 @@ export interface ProxyHandle {
 export function startAnthropicProxy(sessionId: string): Promise<ProxyHandle> {
   let lastSavedUserMsg = '';
   const sessionFilePaths = new Set<string>(); // unique file paths across the session
+  const seenToolIds = new Set<string>();
 
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
@@ -218,6 +317,19 @@ export function startAnthropicProxy(sessionId: string): Promise<ProxyHandle> {
       req.on('end', () => {
         const body = Buffer.concat(bodyChunks);
 
+        // Log every request so we can verify proxy is active and see message structure
+        try {
+          const j = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
+          const msgs = Array.isArray(j.messages) ? j.messages as Array<Record<string, unknown>> : [];
+          const toolUseCount = msgs.filter(m => m.role === 'assistant' && Array.isArray(m.content))
+            .flatMap(m => (m.content as Array<Record<string, unknown>>).filter(b => b.type === 'tool_use'))
+            .length;
+          const toolNames = msgs.filter(m => m.role === 'assistant' && Array.isArray(m.content))
+            .flatMap(m => (m.content as Array<Record<string, unknown>>).filter(b => b.type === 'tool_use').map(b => b.name as string))
+            .filter((v, i, a) => a.indexOf(v) === i);
+          dbg(`request sid=${sessionId} msgs=${msgs.length} tool_use=${toolUseCount} names=${toolNames.join(',') || 'none'}`);
+        } catch { dbg('request: body not JSON'); }
+
         const userMsg = extractUserMessage(body);
         if (userMsg && userMsg !== lastSavedUserMsg) {
           lastSavedUserMsg = userMsg;
@@ -227,6 +339,21 @@ export function startAnthropicProxy(sessionId: string): Promise<ProxyHandle> {
         // Count new unique file paths seen in this request's history
         const newPaths = extractToolFilePaths(body).filter(p => !sessionFilePaths.has(p));
         for (const p of newPaths) sessionFilePaths.add(p);
+
+        // Extract file diffs — only post ones not yet seen this session
+        const allDiffs = extractFileDiffs(body);
+        const newDiffs = allDiffs.filter(d => !seenToolIds.has(d.toolUseId));
+        for (const d of newDiffs) seenToolIds.add(d.toolUseId);
+        if (newDiffs.length > 0) {
+          dbg(`diffs new (${newDiffs.length}): ${newDiffs.map(d => `${d.type}:${d.path}`).join(', ')}`);
+        } else if (allDiffs.length > 0) {
+          dbg(`diffs seen (${allDiffs.length} already deduped): ${allDiffs.map(d => d.path).join(', ')}`);
+        }
+        for (const d of newDiffs) {
+          void appendSessionDiff(sessionId, d).catch((err: unknown) => {
+            dbg(`appendSessionDiff FAILED path=${d.path}: ${err}`);
+          });
+        }
 
         const pricing = modelPricing(extractModel(body));
 

@@ -175,3 +175,26 @@ export async function deleteSession(sessionId: string): Promise<void> {
     method: 'DELETE',
   }).catch(() => {});
 }
+
+export interface FileDiffPayload {
+  toolUseId: string;
+  path: string;
+  type: 'str_replace' | 'write_file' | 'create_file';
+  oldStr?: string;
+  newStr: string;
+}
+
+export async function appendSessionDiff(
+  sessionId: string,
+  diff: FileDiffPayload,
+): Promise<void> {
+  const res = await fetch(`${BACKEND_URL}/sessions/${sessionId}/diffs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(diff),
+  }).catch((err: unknown) => { throw new Error(`network: ${err}`); });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}: ${body}`);
+  }
+}

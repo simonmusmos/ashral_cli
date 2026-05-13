@@ -30,9 +30,7 @@ const APPROVAL_PATTERNS = [
 // Claude is waiting for the user to type a new message
 const WAITING_PATTERNS = [
     /^>\s*$/m, // bare ">" prompt line
-    /\?\s*$/m, // line ending with "?" — note: needs `m` flag so $ matches end-of-line, not end-of-string
-    /^\s*>\s*\d+\./m, // Claude's numbered-choice menu cursor: "> 1. Option"
-    /^\s*\d+\.\s+\S/m, // numbered list of options presented to the user
+    /^\s*[>❯]\s*\d+\./m, // ink selection cursor: "> 1. Option" or "❯ 1. Option"
     /type something/i, // Claude Code's "5. Type something." freeform option
     /what would you like/i,
     /how can i (help|assist)/i,
