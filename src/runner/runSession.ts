@@ -156,7 +156,7 @@ export async function runSession(options: RunSessionOptions): Promise<void> {
   // Each proxy intercepts the agent's AI traffic and saves clean text to the backend,
   // which is far more reliable than scraping raw PTY output.
   const anthropicProxy = adapter.usesAnthropicProxy
-    ? await startAnthropicProxy(state.id).catch(() => null)
+    ? await startAnthropicProxy(state.id, cwd).catch(() => null)
     : null;
   const openaiProxy = adapter.usesOpenAIProxy
     ? await startOpenAIProxy(state.id).catch(() => null)

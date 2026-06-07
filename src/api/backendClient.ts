@@ -182,6 +182,7 @@ export interface FileDiffPayload {
   type: 'str_replace' | 'write_file' | 'create_file';
   oldStr?: string;
   newStr: string;
+  startLine?: number;
 }
 
 export async function appendSessionDiff(

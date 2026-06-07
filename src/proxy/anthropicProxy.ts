@@ -1,10 +1,30 @@
 import * as http from 'http';
 import * as https from 'https';
 import * as fs from 'fs';
+import * as nodePath from 'path';
 import { appendSessionOutput, updateSessionStats, appendSessionDiff, type FileDiffPayload } from '../api/backendClient';
 
 function dbg(msg: string): void {
   fs.appendFileSync('/tmp/ashral-debug.log', `${new Date().toISOString()} [proxy] ${msg}\n`);
+}
+
+/**
+ * Finds the 1-based line number where `searchStr` starts in the file.
+ * Called after the tool has already executed, so newStr should be present in the file.
+ */
+function findStartLine(cwd: string, filePath: string, searchStr: string): number | null {
+  try {
+    const resolved = nodePath.isAbsolute(filePath) ? filePath : nodePath.join(cwd, filePath);
+    const content = fs.readFileSync(resolved, 'utf8');
+    // Use a substantial leading slice to avoid false positives on short strings
+    const probe = searchStr.slice(0, 300).trim();
+    if (probe.length < 6) return null;
+    const idx = content.indexOf(probe);
+    if (idx === -1) return null;
+    return content.slice(0, idx).split('\n').length;
+  } catch {
+    return null;
+  }
 }
 
 const ANTHROPIC_HOST = 'api.anthropic.com';
@@ -114,7 +134,7 @@ function extractToolFilePaths(body: Buffer): string[] {
 
 const DIFF_CONTENT_LIMIT = 3000;
 
-function extractFileDiffs(body: Buffer): FileDiffPayload[] {
+function extractFileDiffs(body: Buffer, cwd: string): FileDiffPayload[] {
   try {
     const json = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
     const messages = json.messages;
@@ -129,63 +149,68 @@ function extractFileDiffs(body: Buffer): FileDiffPayload[] {
         const id = block.id as string | undefined;
         if (!id) continue;
         const input = (block.input ?? {}) as Record<string, unknown>;
-        const cmd = input.command as string | undefined;
 
         // Claude Code's built-in Edit tool: { file_path, old_string, new_string }
         if (name === 'Edit') {
-          const path = (input.file_path ?? input.path) as string | undefined;
+          const filePath = (input.file_path ?? input.path) as string | undefined;
           const oldStr = (input.old_string ?? input.old_str) as string | undefined;
           const newStr = (input.new_string ?? input.new_str) as string | undefined;
-          if (path && newStr !== undefined) {
+          if (filePath && newStr !== undefined) {
+            const startLine = findStartLine(cwd, filePath, newStr) ?? undefined;
             diffs.push({
               toolUseId: id,
-              path,
+              path: filePath,
               type: 'str_replace',
               ...(typeof oldStr === 'string' && { oldStr: oldStr.slice(0, DIFF_CONTENT_LIMIT) }),
               newStr: newStr.slice(0, DIFF_CONTENT_LIMIT),
+              ...(startLine !== undefined && { startLine }),
             });
           }
         // Claude Code's built-in Write tool: { file_path, content }
         } else if (name === 'Write') {
-          const path = (input.file_path ?? input.path) as string | undefined;
+          const filePath = (input.file_path ?? input.path) as string | undefined;
           const content = (input.content ?? input.file_text) as string | undefined;
-          if (path && content !== undefined) {
+          if (filePath && content !== undefined) {
             diffs.push({
               toolUseId: id,
-              path,
+              path: filePath,
               type: 'write_file',
               newStr: content.slice(0, DIFF_CONTENT_LIMIT),
+              startLine: 1,
             });
           }
         // Legacy str_replace_based_edit_tool format
         } else if (name.toLowerCase().includes('str_replace') || name === 'edit_file') {
           const isCreate = (input.command as string | undefined) === 'create' || (input.command as string | undefined) === 'write';
-          const path = (input.path ?? input.file_path) as string | undefined;
+          const filePath = (input.path ?? input.file_path) as string | undefined;
           if (isCreate) {
             const content = (input.file_text ?? input.new_str ?? input.content) as string | undefined;
-            if (path && content !== undefined) {
-              diffs.push({ toolUseId: id, path, type: 'create_file', newStr: content.slice(0, DIFF_CONTENT_LIMIT) });
+            if (filePath && content !== undefined) {
+              diffs.push({ toolUseId: id, path: filePath, type: 'create_file', newStr: content.slice(0, DIFF_CONTENT_LIMIT), startLine: 1 });
             }
           } else {
             const newStr = (input.new_str ?? input.new_string) as string | undefined;
-            if (path && newStr !== undefined) {
+            if (filePath && newStr !== undefined) {
+              const startLine = findStartLine(cwd, filePath, newStr) ?? undefined;
               diffs.push({
-                toolUseId: id, path, type: 'str_replace',
+                toolUseId: id, path: filePath, type: 'str_replace',
                 ...(typeof (input.old_str ?? input.old_string) === 'string' && {
                   oldStr: ((input.old_str ?? input.old_string) as string).slice(0, DIFF_CONTENT_LIMIT),
                 }),
                 newStr: newStr.slice(0, DIFF_CONTENT_LIMIT),
+                ...(startLine !== undefined && { startLine }),
               });
             }
           }
         } else if (name === 'write_file' || name === 'create_file') {
-          const path = (input.file_path ?? input.path) as string | undefined;
+          const filePath = (input.file_path ?? input.path) as string | undefined;
           const content = (input.content ?? input.file_text) as string | undefined;
-          if (path && content !== undefined) {
+          if (filePath && content !== undefined) {
             diffs.push({
-              toolUseId: id, path,
+              toolUseId: id, path: filePath,
               type: name === 'create_file' ? 'create_file' : 'write_file',
               newStr: content.slice(0, DIFF_CONTENT_LIMIT),
+              startLine: 1,
             });
           }
         }
@@ -303,7 +328,7 @@ export interface ProxyHandle {
   stop: () => Promise<void>;
 }
 
-export function startAnthropicProxy(sessionId: string): Promise<ProxyHandle> {
+export function startAnthropicProxy(sessionId: string, cwd: string): Promise<ProxyHandle> {
   let lastSavedUserMsg = '';
   const sessionFilePaths = new Set<string>(); // unique file paths across the session
   const seenToolIds = new Set<string>();
@@ -341,7 +366,7 @@ export function startAnthropicProxy(sessionId: string): Promise<ProxyHandle> {
         for (const p of newPaths) sessionFilePaths.add(p);
 
         // Extract file diffs — only post ones not yet seen this session
-        const allDiffs = extractFileDiffs(body);
+        const allDiffs = extractFileDiffs(body, cwd);
         const newDiffs = allDiffs.filter(d => !seenToolIds.has(d.toolUseId));
         for (const d of newDiffs) seenToolIds.add(d.toolUseId);
         if (newDiffs.length > 0) {
