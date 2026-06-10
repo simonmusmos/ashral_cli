@@ -53,7 +53,7 @@ function makeOutputBuffer() {
     const lines = [];
     const MAX = 80;
     function push(raw) {
-        const cleaned = raw
+        const split = raw
             // ink uses cursor-forward (\x1b[nC) for spaces — restore them before stripping
             .replace(/\x1B\[(\d*)C/g, (_, n) => ' '.repeat(Math.max(1, parseInt(n || '1', 10))))
             // Cursor-position and cursor-down codes imply a new line — convert before stripping
@@ -63,9 +63,22 @@ function makeOutputBuffer() {
             .replace(ANSI_RE, '') // strip remaining escape sequences
             .replace(/\r/g, '\n') // bare \r → newline
             .split('\n')
-            .map((l) => l.trim())
-            .filter((l) => l.length > 1);
-        lines.push(...cleaned);
+            .map((l) => l.trim());
+        // Claude Code renders its suggested action as '>' then cursor-to-col-1 then the
+        // suggestion text, e.g. "> Commit this...". After our \x1b[G→\n conversion that
+        // becomes two lines: '>' and 'Commit this...'. Re-join them so the '> ' prefix
+        // filter in extractBody() treats the whole thing as a suggestion and ignores it.
+        const rejoined = [];
+        for (let i = 0; i < split.length; i++) {
+            if ((split[i] === '>' || split[i] === '❯') && i + 1 < split.length && split[i + 1].length > 0) {
+                rejoined.push('> ' + split[i + 1]);
+                i++;
+            }
+            else {
+                rejoined.push(split[i]);
+            }
+        }
+        lines.push(...rejoined.filter((l) => l.length > 1));
         if (lines.length > MAX)
             lines.splice(0, lines.length - MAX);
     }
@@ -74,7 +87,8 @@ function makeOutputBuffer() {
             .filter((l) => !l.includes('[ashral]'))
             .filter((l) => !/^\d+\.\s/.test(l))
             .filter((l) => !/^[╭╰╮╯│─❯>\s□↓↑←→]+$/.test(l))
-            .filter((l) => !/→\s*\w+_\w+/.test(l));
+            .filter((l) => !/→\s*\w+_\w+/.test(l))
+            .filter((l) => !l.trimStart().startsWith('> ')); // Claude Code suggested-action lines
         const question = [...candidates].reverse().find((l) => l.endsWith('?'));
         const body = question ?? candidates[candidates.length - 1];
         return body ? body.slice(0, 200) : undefined;

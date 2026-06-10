@@ -251,9 +251,13 @@ function stripInternalMetadata(text: string): string {
   // appended by Claude Code's CLI, not part of the actual AI response.
   const lines = trimmed.split('\n');
   const firstAnnotation = lines.findIndex(l => l.trimStart().startsWith('✳'));
-  const cleaned = (firstAnnotation === -1 ? lines : lines.slice(0, firstAnnotation))
-    .join('\n').trim();
-  return cleaned;
+  const afterAnnotations = (firstAnnotation === -1 ? lines : lines.slice(0, firstAnnotation));
+
+  // Strip trailing "> suggestion" lines — Claude Code appends suggested next
+  // actions as lines starting with "> " at the end of the response text.
+  let end = afterAnnotations.length;
+  while (end > 0 && afterAnnotations[end - 1].trimStart().startsWith('> ')) end--;
+  return afterAnnotations.slice(0, end).join('\n').trim();
 }
 
 async function save(sessionId: string, text: string, stream: 'stdout' | 'stderr'): Promise<void> {
